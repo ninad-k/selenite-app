@@ -15,4 +15,12 @@ path = "src/main.rs"
 anyhow = "1"
 selenite-core.workspace = true
 selenite-index.workspace = true
+selenite-db.workspace = true
+selenite-ai = { path = "../selenite-ai" }
+selenite-mcp = { path = "../selenite-mcp" }
+selenite-sync = { path = "../selenite-sync" }
+selenite-plugin-host = { path = "../selenite-plugin-host" }
+serde_json = "1"
+serde = "1"
+toml = "1.1"
 
