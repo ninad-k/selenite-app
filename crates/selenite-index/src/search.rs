@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use selenite_core::Page;
 use tantivy::{
-    Index, IndexReader, ReloadPolicy, TantivyDocument, TantivyError,
+    Index, IndexReader, ReloadPolicy, TantivyDocument, TantivyError, Term,
     collector::TopDocs,
     query::QueryParser,
     schema::{Field, STORED, STRING, Schema, TEXT, Value},
@@ -78,6 +78,28 @@ impl SearchIndex {
         // This is a logical cache operation. No Markdown or user file is deleted.
         let mut writer = self.index.writer_with_num_threads(1, 50_000_000)?;
         writer.delete_all_documents()?;
+        for page in pages {
+            let mut document = TantivyDocument::default();
+            document.add_text(self.path, path_key(&page.path));
+            document.add_text(self.title, &page.title);
+            document.add_text(self.body, &page.body);
+            writer.add_document(document)?;
+        }
+        writer.commit()?;
+        drop(writer);
+        self.reader.reload()?;
+        self.new = false;
+        Ok(())
+    }
+
+    pub(crate) fn apply(&mut self, pages: &[Page], removed: &[PathBuf]) -> Result<()> {
+        if pages.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self.index.writer_with_num_threads(1, 50_000_000)?;
+        for path in removed.iter().chain(pages.iter().map(|page| &page.path)) {
+            writer.delete_term(Term::from_field_text(self.path, &path_key(path)));
+        }
         for page in pages {
             let mut document = TantivyDocument::default();
             document.add_text(self.path, path_key(&page.path));

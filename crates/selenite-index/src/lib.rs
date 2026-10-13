@@ -1,7 +1,11 @@
 //! Disposable local indexes. Every cached value can be recovered from Markdown.
 
+mod incremental;
 mod search;
+mod watcher;
+pub use incremental::RefreshStats;
 pub use search::SearchHit;
+pub use watcher::VaultWatcher;
 
 use std::{
     collections::BTreeMap,
@@ -305,16 +309,19 @@ fn read_vault_pages(vault: &Vault) -> Result<Vec<Page>> {
             let source = vault
                 .read_source(&path)
                 .with_context(|| format!("read {}", path.display()))?;
-            let page =
-                Page::parse(&path, &source).with_context(|| format!("parse {}", path.display()))?;
-            ensure!(
-                page.frontmatter.keys().all(|name| name.as_str().is_some()),
-                "frontmatter property names must be strings in {}",
-                path.display()
-            );
-            Ok(page)
+            parse_page(&path, &source)
         })
         .collect()
+}
+
+fn parse_page(path: &Path, source: &str) -> Result<Page> {
+    let page = Page::parse(path, source).with_context(|| format!("parse {}", path.display()))?;
+    ensure!(
+        page.frontmatter.keys().all(|name| name.as_str().is_some()),
+        "frontmatter property names must be strings in {}",
+        path.display()
+    );
+    Ok(page)
 }
 
 fn recoverable_cache_error(error: &anyhow::Error) -> bool {
