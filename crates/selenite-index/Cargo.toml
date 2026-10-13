@@ -9,4 +9,7 @@ workspace = true
 
 [dependencies]
 selenite-core.workspace = true
+anyhow = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_yaml = "0.9"
 
