@@ -2,6 +2,7 @@
 
 use std::{
     fs, io,
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -52,6 +53,57 @@ impl Vault {
 
     pub fn read_source(&self, path: impl AsRef<Path>) -> io::Result<String> {
         fs::read_to_string(self.resolve_existing(path.as_ref())?)
+    }
+
+    /// Exclusively create a Markdown page and any missing ordinary directories.
+    /// Returns false for an existing regular page, without changing its bytes.
+    pub fn create_page(&self, path: impl AsRef<Path>, source: &str) -> io::Result<bool> {
+        let path = path.as_ref();
+        crate::validate_page_path(path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        let mut directory = self.root.clone();
+        for component in path.parent().unwrap_or(Path::new("")).components() {
+            directory.push(component);
+            match fs::create_dir(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            let metadata = fs::symlink_metadata(&directory)?;
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || !directory.canonicalize()?.starts_with(&self.root)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "page ancestor is not a regular vault directory",
+                ));
+            }
+        }
+        let destination = self.root.join(path);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+        {
+            Ok(mut file) => {
+                file.write_all(source.as_bytes())?;
+                file.sync_all()?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(destination)?;
+                if metadata.is_file() && !metadata.file_type().is_symlink() {
+                    Ok(false)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "page destination is not a regular file",
+                    ))
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolve a relative path without following links, including linked ancestors.
@@ -167,5 +219,24 @@ mod tests {
         ] {
             assert!(validate_relative(Path::new(path)).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn creates_nested_page_exclusively_without_overwriting() {
+        let root = scratch();
+        let vault = Vault::open(&root).unwrap();
+        let path = Path::new("Nested").join("Page.md");
+        assert!(vault.create_page(&path, "original\r\n").unwrap());
+        assert!(!vault.create_page(&path, "replacement").unwrap());
+        assert_eq!(vault.read_source(path).unwrap(), "original\r\n");
+        for invalid in ["../outside.md", ".selenite/cache.md", "asset.txt"] {
+            assert!(vault.create_page(invalid, "content").is_err());
+        }
+        fs::write(root.join("File.md"), "not a directory").unwrap();
+        assert!(
+            vault
+                .create_page(Path::new("File.md").join("Child.md"), "content")
+                .is_err()
+        );
     }
 }

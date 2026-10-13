@@ -17,3 +17,8 @@ all = "warn"
 selenite-core = { path = "crates/selenite-core" }
 selenite-index = { path = "crates/selenite-index" }
 selenite-db = { path = "crates/selenite-db" }
+
+# Reduce release executable size and cold-loading work.
+[profile.release]
+lto = "thin"
+codegen-units = 1
