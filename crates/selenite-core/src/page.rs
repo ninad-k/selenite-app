@@ -202,21 +202,32 @@ fn parse_blocks(body: &str, offset: usize) -> (Vec<Block>, Vec<Range<usize>>) {
                     tag,
                     Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::Link { .. } | Tag::Image { .. }
                 );
-                stack.push((block_kind(&tag), range.start, exclude));
+                stack.push((block_kind(&tag), range.start, exclude, None));
             }
             Event::End(_) => {
-                if let Some((kind, start, exclude)) = stack.pop() {
+                if let Some((kind, start, exclude, inline_end)) = stack.pop() {
                     let span = start + offset..range.end + offset;
                     if exclude {
                         excluded.push(span.clone());
                     }
                     if let Some(kind) = kind {
-                        blocks.push(make_block(kind, span, body, offset));
+                        let mut block = make_block(kind, span, body, offset);
+                        let candidate_end = match kind {
+                            BlockKind::Paragraph | BlockKind::Heading => Some(range.end),
+                            BlockKind::Item => inline_end,
+                            _ => None,
+                        };
+                        block.id = candidate_end
+                            .and_then(|end| block_id(&body[start..end], start + offset, &excluded));
+                        blocks.push(block);
+                    } else {
+                        record_item_inline_end(&mut stack, range.end);
                     }
                 }
             }
             Event::Code(_) | Event::InlineHtml(_) => {
-                excluded.push(range.start + offset..range.end + offset)
+                excluded.push(range.start + offset..range.end + offset);
+                record_item_inline_end(&mut stack, range.end);
             }
             Event::Rule => blocks.push(make_block(
                 BlockKind::ThematicBreak,
@@ -224,7 +235,7 @@ fn parse_blocks(body: &str, offset: usize) -> (Vec<Block>, Vec<Range<usize>>) {
                 body,
                 offset,
             )),
-            _ => {}
+            _ => record_item_inline_end(&mut stack, range.end),
         }
     }
     blocks.sort_by_key(|block| (block.span.start, std::cmp::Reverse(block.span.end)));
@@ -234,22 +245,36 @@ fn parse_blocks(body: &str, offset: usize) -> (Vec<Block>, Vec<Range<usize>>) {
 
 fn make_block(kind: BlockKind, span: Range<usize>, body: &str, offset: usize) -> Block {
     let text = body[span.start - offset..span.end - offset].to_owned();
-    let id = if matches!(kind, BlockKind::Paragraph | BlockKind::Heading) {
-        block_id(&text)
-    } else {
-        None
-    };
     Block {
         kind,
         span,
         text,
-        id,
+        id: None,
     }
 }
 
-fn block_id(text: &str) -> Option<String> {
+// Tight-list items have inline events directly under Item, whereas loose-list
+// items own Paragraph nodes. Only the nearest block may claim an inline marker.
+fn record_item_inline_end(
+    stack: &mut [(Option<BlockKind>, usize, bool, Option<usize>)],
+    end: usize,
+) {
+    if let Some((Some(BlockKind::Item), _, _, inline_end)) =
+        stack.iter_mut().rev().find(|(kind, ..)| kind.is_some())
+    {
+        *inline_end = Some(end);
+    }
+}
+
+fn block_id(text: &str, offset: usize, excluded: &[Range<usize>]) -> Option<String> {
     let trimmed = text.trim_end();
     let start = trimmed.rfind('^')?;
+    if excluded
+        .iter()
+        .any(|range| range.start < offset + trimmed.len() && range.end > offset + start)
+    {
+        return None;
+    }
     if start > 0 && !trimmed[..start].ends_with(char::is_whitespace) {
         return None;
     }

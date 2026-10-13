@@ -171,3 +171,67 @@ fn empty_note_and_incomplete_wikilinks_are_preserved() {
     assert_eq!(page.links.len(), 1);
     assert_eq!(page.links[0].target, "ok");
 }
+
+#[test]
+fn tight_list_items_keep_ids_without_claiming_nested_child_markers() {
+    let source = "---\r\nkind: tasks\r\n---\r\n- task ☕ ^task\r\n- parent ^parent\r\n  - child ^child\r\n- unmarked parent\r\n  - marked child ^nested\r\n";
+    let page = Page::parse("Tasks.md", source).unwrap();
+    let addressed: Vec<_> = page
+        .blocks
+        .iter()
+        .filter_map(|block| block.id.as_deref().map(|id| (block.kind, id)))
+        .collect();
+    assert_eq!(
+        addressed,
+        vec![
+            (BlockKind::Item, "task"),
+            (BlockKind::Item, "parent"),
+            (BlockKind::Item, "child"),
+            (BlockKind::Item, "nested")
+        ]
+    );
+    for block in &page.blocks {
+        assert_eq!(block.text, source[block.span.clone()]);
+    }
+    assert_eq!(page.source, source);
+}
+
+#[test]
+fn loose_list_paragraphs_own_their_ids_without_parent_duplicates() {
+    let page = Page::parse(
+        "Loose.md",
+        "- first paragraph ^first\n\n- second paragraph ^second\n\n  - nested child ^nested\n",
+    )
+    .unwrap();
+    let addressed: Vec<_> = page
+        .blocks
+        .iter()
+        .filter_map(|block| block.id.as_deref().map(|id| (block.kind, id)))
+        .collect();
+    assert_eq!(
+        addressed,
+        vec![
+            (BlockKind::Paragraph, "first"),
+            (BlockKind::Paragraph, "second"),
+            (BlockKind::Item, "nested")
+        ]
+    );
+    assert!(
+        !page
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::List && block.id.is_some())
+    );
+}
+
+#[test]
+fn block_ids_ignore_code_html_links_and_nonterminal_inline_markup() {
+    let source = "- `code ^inline`\n- [link ^label](https://example.com)\n- ![image ^image](image.png)\n- <span title=\"^attribute\">text</span>\n- **bold ^bold**\n- \\^escaped\n- plain [link](https://example.com) ^valid\n\n```\n^fenced\n```\n\n<div>\n^html\n</div>\n\n[ref]: https://example.com/^reference\n";
+    let page = Page::parse("Markers.md", source).unwrap();
+    let addressed: Vec<_> = page
+        .blocks
+        .iter()
+        .filter_map(|block| block.id.as_deref())
+        .collect();
+    assert_eq!(addressed, ["valid"]);
+}
