@@ -314,7 +314,19 @@ fn malformed_source_prevents_recovery_from_touching_corrupt_cache() {
         corrupt
     );
     assert_eq!(fs::read_to_string(root.join("Broken.md")).unwrap(), source);
-    assert_eq!(fs::read_dir(root.join(".selenite")).unwrap().count(), 1);
+    let mut metadata: Vec<_> = fs::read_dir(root.join(".selenite"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    metadata.sort();
+    // Snapshot coordination may create its lock, but cache recovery must not run.
+    assert_eq!(
+        metadata,
+        [
+            std::ffi::OsString::from("cache"),
+            std::ffi::OsString::from("write.lock")
+        ]
+    );
     assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
 }
 

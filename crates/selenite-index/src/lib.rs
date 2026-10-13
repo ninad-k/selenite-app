@@ -302,6 +302,7 @@ impl Index {
 }
 
 fn read_vault_pages(vault: &Vault) -> Result<Vec<Page>> {
+    let _source_guard = vault.lock_shared()?;
     vault
         .markdown_paths()?
         .into_iter()

@@ -44,6 +44,8 @@ impl Index {
                 })?
                 .collect::<rusqlite::Result<_>>()?
         };
+        // Hold one coherent source snapshot across cooperating multi-file renames.
+        let source_guard = self.vault.lock_shared()?;
         let paths = self.vault.markdown_paths()?;
         let resolver = LinkResolver::new(&paths)?;
         let mut changed = Vec::new();
@@ -59,6 +61,7 @@ impl Index {
                 changed.push(parse_page(path, &source)?);
             }
         }
+        drop(source_guard);
         let removed: Vec<_> = previous.into_keys().collect();
         if !changed.is_empty() || !removed.is_empty() {
             self.connection
