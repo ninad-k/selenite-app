@@ -243,7 +243,7 @@ fn explicit_rebuild_recovers_non_sqlite_cache_and_retains_original_bytes() {
     let retained: Vec<_> = fs::read_dir(root.join(".selenite"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path != index.cache_dir())
+        .filter(|path| path.is_dir() && path != index.cache_dir())
         .collect();
     assert_eq!(retained.len(), 1);
     assert_eq!(
@@ -275,7 +275,7 @@ fn explicit_rebuild_recovers_incompatible_link_schema_from_markdown() {
     let retained: Vec<_> = fs::read_dir(root.join(".selenite"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path != index.cache_dir())
+        .filter(|path| path.is_dir() && path != index.cache_dir())
         .collect();
     assert_eq!(retained.len(), 1);
     let previous = rusqlite::Connection::open_with_flags(

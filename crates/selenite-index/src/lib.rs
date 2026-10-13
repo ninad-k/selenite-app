@@ -1,8 +1,11 @@
 //! Disposable local indexes. Every cached value can be recovered from Markdown.
 
+mod search;
+pub use search::SearchHit;
+
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -53,6 +56,8 @@ pub struct Index {
     vault: Vault,
     cache_dir: PathBuf,
     connection: Connection,
+    search: search::SearchIndex,
+    cache_identity: String,
 }
 
 impl Index {
@@ -61,6 +66,26 @@ impl Index {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let vault = Vault::open(root).context("open vault")?;
         let cache_dir = prepare_cache(&vault)?;
+        let _guard = cache_lock(&cache_dir, true)?;
+        Self::open_unlocked(vault, cache_dir)
+    }
+
+    fn open_unlocked(vault: Vault, cache_dir: PathBuf) -> Result<Self> {
+        let identity_path = cache_dir.join("identity");
+        check_cache_file(&identity_path)?;
+        let cache_identity = match fs::read_to_string(&identity_path) {
+            Ok(identity) => identity,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let identity = format!(
+                    "{}-{}",
+                    std::process::id(),
+                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+                );
+                fs::write(&identity_path, &identity)?;
+                identity
+            }
+            Err(error) => return Err(error.into()),
+        };
         for name in [
             "index.sqlite",
             "index.sqlite-wal",
@@ -81,10 +106,17 @@ impl Index {
         connection.prepare("SELECT path, title, body, source FROM pages LIMIT 0")?;
         connection.prepare("SELECT source, position, target, resolved, heading, alias, embedded FROM links LIMIT 0")?;
         connection.prepare("SELECT page, name, value_yaml FROM properties LIMIT 0")?;
+        connection.prepare("SELECT ready FROM cache_state WHERE singleton = 1")?;
+        let search = search::SearchIndex::open(&cache_dir.join("search"))?;
+        if search.is_new() {
+            connection.execute("UPDATE cache_state SET ready = 0", [])?;
+        }
         Ok(Self {
             vault,
             cache_dir,
             connection,
+            search,
+            cache_identity,
         })
     }
 
@@ -94,6 +126,38 @@ impl Index {
 
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
+    }
+
+    pub fn is_ready(&self) -> Result<bool> {
+        let _guard = cache_lock(&self.cache_dir, false)?;
+        self.ready_unlocked()
+    }
+
+    fn ready_unlocked(&self) -> Result<bool> {
+        ensure!(
+            fs::read_to_string(self.cache_dir.join("identity"))? == self.cache_identity,
+            "cache was replaced; reopen the index"
+        );
+        Ok(self.connection.query_row(
+            "SELECT ready FROM cache_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn ensure_ready(&self) -> Result<()> {
+        ensure!(
+            self.ready_unlocked()?,
+            "cache is incomplete; rebuild from disk before querying"
+        );
+        Ok(())
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let _guard = cache_lock(&self.cache_dir, false)?;
+        self.ensure_ready()?;
+        self.search.reload()?;
+        self.search.search(query, limit)
     }
 
     /// Parse all sources before touching the previous cache. Recreate every
@@ -111,7 +175,9 @@ impl Index {
         let started = Instant::now();
         let vault = Vault::open(root.as_ref())?;
         let pages = read_vault_pages(&vault)?;
-        let mut index = match Self::open(vault.root()) {
+        let cache = prepare_cache(&vault)?;
+        let _guard = cache_lock(&cache, true)?;
+        let mut index = match Self::open_unlocked(vault.clone(), cache.clone()) {
             Ok(index) => index,
             Err(error) if recoverable_cache_error(&error) => {
                 let cache = prepare_cache(&vault)?;
@@ -133,16 +199,30 @@ impl Index {
                 );
                 ensure!(!archive.exists(), "cache archive already exists");
                 fs::rename(&cache, &archive).context("retain damaged cache")?;
-                Self::open(vault.root())?
+                Self::open_unlocked(vault.clone(), prepare_cache(&vault)?)?
             }
             Err(error) => return Err(error),
         };
-        let stats = index.rebuild_pages(pages, started)?;
+        let stats = index.rebuild_pages_unlocked(pages, started)?;
         Ok((index, stats))
     }
 
     fn rebuild_pages(&mut self, pages: Vec<Page>, started: Instant) -> Result<RebuildStats> {
+        let _guard = cache_lock(&self.cache_dir, true)?;
+        self.ready_unlocked()?;
+        self.rebuild_pages_unlocked(pages, started)
+    }
+
+    fn rebuild_pages_unlocked(
+        &mut self,
+        pages: Vec<Page>,
+        started: Instant,
+    ) -> Result<RebuildStats> {
         let resolver = LinkResolver::new(pages.iter().map(|page| &page.path))?;
+        // Durable before either cache changes. A crash between the two commits
+        // leaves this flag false, forcing disk-only recovery before queries.
+        self.connection
+            .execute("UPDATE cache_state SET ready = 0", [])?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -152,6 +232,7 @@ impl Index {
             insert_page(&transaction, page, &resolver)
                 .with_context(|| format!("index {}", page.path.display()))?;
         }
+        self.search.replace_all(&pages)?;
         transaction.execute("UPDATE cache_state SET ready = 1", [])?;
         transaction.pragma_update(None, "user_version", 1)?;
         transaction.commit()?;
@@ -164,6 +245,8 @@ impl Index {
     }
 
     pub fn pages(&self) -> Result<Vec<IndexedPage>> {
+        let _guard = cache_lock(&self.cache_dir, false)?;
+        self.ensure_ready()?;
         let mut statement = self
             .connection
             .prepare("SELECT path, title, body FROM pages ORDER BY path")?;
@@ -178,6 +261,8 @@ impl Index {
     }
 
     pub fn backlinks(&self, target: &Path) -> Result<Vec<IndexedLink>> {
+        let _guard = cache_lock(&self.cache_dir, false)?;
+        self.ensure_ready()?;
         selenite_core::validate_page_path(target)?;
         let mut statement = self.connection.prepare("SELECT source, target, resolved, heading, alias, embedded FROM links WHERE resolved = ?1 ORDER BY source, position")?;
         let rows = statement.query_map([path_key(target)], |row| {
@@ -197,6 +282,8 @@ impl Index {
     }
 
     pub fn properties(&self, path: &Path) -> Result<BTreeMap<String, String>> {
+        let _guard = cache_lock(&self.cache_dir, false)?;
+        self.ensure_ready()?;
         selenite_core::validate_page_path(path)?;
         let mut statement = self
             .connection
@@ -318,4 +405,24 @@ fn check_cache_file(path: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+fn cache_lock(cache_dir: &Path, exclusive: bool) -> Result<File> {
+    let path = cache_dir
+        .parent()
+        .context("cache parent")?
+        .join("index.lock");
+    check_cache_file(&path)?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    if exclusive {
+        lock.lock()?;
+    } else {
+        lock.lock_shared()?;
+    }
+    Ok(lock)
 }
