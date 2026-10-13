@@ -35,6 +35,14 @@ pub struct RenameReport {
     pub journal: PathBuf,
 }
 
+/// Exact metadata inputs used by a reviewed operation. Both prefix and file
+/// paths are relative to `.selenite`; files include all descendants of prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataSnapshot {
+    pub prefix: PathBuf,
+    pub files: BTreeMap<PathBuf, String>,
+}
+
 impl Vault {
     /// Guard a multi-file read against cooperating Selenite writers. Individual
     /// reads remain lock-free and see complete files after atomic publication.
@@ -180,6 +188,23 @@ impl Vault {
         Ok(files)
     }
 
+    /// Capture metadata bytes without acquiring a lock. Hold `lock_shared`
+    /// while capturing and using the snapshot to derive a multi-file plan.
+    pub fn metadata_snapshot(&self, prefix: impl AsRef<Path>) -> io::Result<MetadataSnapshot> {
+        let prefix = prefix.as_ref();
+        let mut files = BTreeMap::new();
+        for path in self.metadata_paths(prefix)? {
+            let source = self
+                .read_metadata(&path)?
+                .ok_or_else(|| conflict("metadata disappeared while capturing snapshot"))?;
+            files.insert(path, source);
+        }
+        Ok(MetadataSnapshot {
+            prefix: prefix.to_owned(),
+            files,
+        })
+    }
+
     /// Apply a previously reviewed `plan_rename(expected_pages, from, to)`.
     /// The entire vault file set and every source are preconditions: stale plans
     /// fail before publishing any page. Multi-file publication is journaled,
@@ -203,11 +228,48 @@ impl Vault {
         expected_pages: &[Page],
         final_additional_pages: &[Page],
     ) -> io::Result<RenameReport> {
+        self.apply_rename_checked(from, to, expected_pages, final_additional_pages, None)
+    }
+
+    /// Validate the reviewed metadata file set and bytes under the same write
+    /// lock as page publication. Recovery retains and rechecks these inputs.
+    pub fn apply_rename_with_metadata_snapshot(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected_pages: &[Page],
+        final_additional_pages: &[Page],
+        snapshot: &MetadataSnapshot,
+    ) -> io::Result<RenameReport> {
+        self.apply_rename_checked(
+            from,
+            to,
+            expected_pages,
+            final_additional_pages,
+            Some(snapshot),
+        )
+    }
+
+    fn apply_rename_checked(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected_pages: &[Page],
+        final_additional_pages: &[Page],
+        snapshot: Option<&MetadataSnapshot>,
+    ) -> io::Result<RenameReport> {
         if from == to {
             return Err(invalid("rename source and destination are identical"));
         }
         let _guard = exclusive(self)?;
-        let journal = prepare_rename(self, from, to, expected_pages, final_additional_pages)?;
+        let journal = prepare_rename(
+            self,
+            from,
+            to,
+            expected_pages,
+            final_additional_pages,
+            snapshot,
+        )?;
         complete_rename(self, &journal).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -288,6 +350,7 @@ struct Journal {
     to: PathBuf,
     edits: Vec<Edit>,
     unchanged: BTreeMap<PathBuf, String>,
+    metadata: Option<MetadataSnapshot>,
 }
 
 fn prepare_rename(
@@ -296,7 +359,11 @@ fn prepare_rename(
     to: &Path,
     expected: &[Page],
     additional: &[Page],
+    metadata: Option<&MetadataSnapshot>,
 ) -> io::Result<Journal> {
+    if let Some(snapshot) = metadata {
+        compare_metadata(vault, snapshot)?;
+    }
     let mut sources = BTreeMap::new();
     let mut parsed = Vec::new();
     for page in expected {
@@ -389,6 +456,7 @@ fn prepare_rename(
         to: to.to_owned(),
         edits,
         unchanged,
+        metadata: metadata.cloned(),
     };
     preflight(vault, &journal)?;
     let same_windows_path = cfg!(windows) && key(from).eq_ignore_ascii_case(&key(to));
@@ -402,6 +470,9 @@ fn prepare_rename(
 }
 
 fn preflight(vault: &Vault, journal: &Journal) -> io::Result<()> {
+    if let Some(snapshot) = &journal.metadata {
+        compare_metadata(vault, snapshot)?;
+    }
     for path in vault.markdown_paths()? {
         if !journal.unchanged.contains_key(&path)
             && !journal
@@ -514,6 +585,17 @@ impl Journal {
         manifest.insert("format".into(), 1.into());
         manifest.insert("from".into(), key(&self.from).into());
         manifest.insert("to".into(), key(&self.to).into());
+        if let Some(snapshot) = &self.metadata {
+            let mut metadata = Mapping::new();
+            metadata.insert("prefix".into(), key(&snapshot.prefix).into());
+            let files = snapshot
+                .files
+                .iter()
+                .map(|(path, source)| (Value::String(key(path)), Value::String(source.clone())))
+                .collect();
+            metadata.insert("files".into(), Value::Mapping(files));
+            manifest.insert("metadata".into(), Value::Mapping(metadata));
+        }
         manifest.insert(
             "edits".into(),
             Value::Sequence(
@@ -547,6 +629,32 @@ impl Journal {
         }
         let from = manifest_path(&value["from"])?;
         let to = manifest_path(&value["to"])?;
+        let metadata = if value.get("metadata").is_some() {
+            let metadata = &value["metadata"];
+            let prefix = metadata["prefix"]
+                .as_str()
+                .ok_or_else(|| invalid("rename metadata prefix is missing"))?;
+            let prefix = PathBuf::from(prefix);
+            let mut files = BTreeMap::new();
+            for (path, source) in metadata["files"]
+                .as_mapping()
+                .ok_or_else(|| invalid("rename metadata files are missing"))?
+            {
+                let path = PathBuf::from(
+                    path.as_str()
+                        .ok_or_else(|| invalid("invalid rename metadata file path"))?,
+                );
+                let source = source
+                    .as_str()
+                    .ok_or_else(|| invalid("invalid rename metadata source"))?;
+                files.insert(path, source.to_owned());
+            }
+            let snapshot = MetadataSnapshot { prefix, files };
+            validate_metadata_snapshot(&snapshot)?;
+            Some(snapshot)
+        } else {
+            None
+        };
         if from == to {
             return Err(invalid("identical rename journal paths"));
         }
@@ -600,8 +708,28 @@ impl Journal {
             to,
             edits,
             unchanged,
+            metadata,
         })
     }
+}
+
+fn validate_metadata_snapshot(snapshot: &MetadataSnapshot) -> io::Result<()> {
+    metadata_path(&snapshot.prefix)?;
+    for path in snapshot.files.keys() {
+        metadata_path(path)?;
+        if !path.starts_with(&snapshot.prefix) {
+            return Err(invalid("metadata snapshot file is outside its prefix"));
+        }
+    }
+    Ok(())
+}
+
+fn compare_metadata(vault: &Vault, snapshot: &MetadataSnapshot) -> io::Result<()> {
+    validate_metadata_snapshot(snapshot)?;
+    if vault.metadata_snapshot(&snapshot.prefix)? != *snapshot {
+        return Err(conflict("metadata changed since rename planning"));
+    }
+    Ok(())
 }
 
 fn manifest_path(value: &Value) -> io::Result<PathBuf> {

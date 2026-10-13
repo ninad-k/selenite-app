@@ -14,4 +14,4 @@ pub use model::{
     Row, RowGroup, SavedView, Sort, Stored,
 };
 pub use query::query_rows;
-pub use store::DatabaseStore;
+pub use store::{DatabaseStore, ReviewedRenamePlan};

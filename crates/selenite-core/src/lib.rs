@@ -9,4 +9,4 @@ pub use links::{
     Backlink, BacklinkMap, LinkError, LinkResolver, RenamePlan, ResolveError, plan_rename,
 };
 pub use page::{Block, BlockKind, Page, ParseError, WikiLink, extract_links, validate_page_path};
-pub use persistence::{RenameReport, WriteReport};
+pub use persistence::{MetadataSnapshot, RenameReport, WriteReport};

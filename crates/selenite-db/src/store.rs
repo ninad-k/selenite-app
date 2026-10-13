@@ -5,7 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use selenite_core::{LinkResolver, Page, RenamePlan, validate_page_path, vault::Vault};
+use selenite_core::{
+    LinkResolver, MetadataSnapshot, Page, RenamePlan, validate_page_path, vault::Vault,
+};
 use serde_yaml::{Mapping, Value};
 
 use crate::{
@@ -17,6 +19,14 @@ use crate::{
 /// Metadata and row access through the core's safe filesystem boundary.
 pub struct DatabaseStore {
     vault: Vault,
+}
+
+/// Page changes and the exact schema inputs used to derive them. Pass both to
+/// the core's metadata-checked rename so a schema edit cannot race publication.
+#[derive(Debug, Clone)]
+pub struct ReviewedRenamePlan {
+    pub plan: RenamePlan,
+    pub schema_snapshot: MetadataSnapshot,
 }
 
 impl DatabaseStore {
@@ -35,10 +45,37 @@ impl DatabaseStore {
     /// Plan Markdown and schema-typed relation changes together. Membership and
     /// field types are taken from the original pages; text and unknown YAML
     /// properties are never inferred to be relations. Ambiguous targets remain
-    /// untouched. Apply these final pages through `apply_rename_with_edits`.
+    /// untouched. For persistence use `plan_rename_reviewed` so metadata can be
+    /// checked together with page publication.
     pub fn plan_rename(&self, pages: &[Page], from: &Path, to: &Path) -> Result<RenamePlan> {
+        Ok(self.plan_rename_reviewed(pages, from, to)?.plan)
+    }
+
+    /// Capture schemas and derive relation edits while holding one shared lock.
+    /// Publication must recheck `schema_snapshot` under the core write lock.
+    pub fn plan_rename_reviewed(
+        &self,
+        pages: &[Page],
+        from: &Path,
+        to: &Path,
+    ) -> Result<ReviewedRenamePlan> {
         let _guard = self.vault.lock_shared()?;
-        let schemas = self.list_schemas()?;
+        let schema_snapshot = self.vault.metadata_snapshot("schemas")?;
+        let schemas = schema_snapshot
+            .files
+            .iter()
+            .filter(|(path, _)| {
+                path.parent() == Some(Path::new("schemas"))
+                    && path.extension().and_then(|part| part.to_str()) == Some("toml")
+            })
+            .map(|(path, source)| {
+                let id = path
+                    .file_stem()
+                    .and_then(|part| part.to_str())
+                    .context("schema name must be Unicode")?;
+                parse_schema(id, source)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let originals = pages
             .iter()
             .map(|page| Page::parse(&page.path, &page.source))
@@ -128,7 +165,10 @@ impl DatabaseStore {
             }
         }
         plan.pages = changed.into_values().collect();
-        Ok(plan)
+        Ok(ReviewedRenamePlan {
+            plan,
+            schema_snapshot,
+        })
     }
 
     pub fn load_schema(&self, id: &str) -> Result<Option<DatabaseSchema>> {
@@ -141,10 +181,7 @@ impl DatabaseStore {
         let Some(source) = self.vault.read_metadata(definition_path("schemas", id)?)? else {
             return Ok(None);
         };
-        let definition: DatabaseSchema =
-            toml::from_str(&source).with_context(|| format!("parse schema {id}"))?;
-        definition.validate()?;
-        ensure!(definition.id == id, "schema ID does not match its filename");
+        let definition = parse_schema(id, &source)?;
         Ok(Some(Stored { definition, source }))
     }
 
@@ -361,6 +398,15 @@ impl DatabaseStore {
 fn definition_path(directory: &str, id: &str) -> Result<PathBuf> {
     validate_id(id)?;
     Ok(Path::new(directory).join(format!("{id}.toml")))
+}
+
+fn parse_schema(id: &str, source: &str) -> Result<DatabaseSchema> {
+    validate_id(id)?;
+    let definition: DatabaseSchema =
+        toml::from_str(source).with_context(|| format!("parse schema {id}"))?;
+    definition.validate()?;
+    ensure!(definition.id == id, "schema ID does not match its filename");
+    Ok(definition)
 }
 
 fn path_from_key(key: &str) -> PathBuf {

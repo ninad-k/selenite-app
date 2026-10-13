@@ -335,6 +335,7 @@ fn interrupt_after_archival(vault: &Vault) -> Journal {
         Path::new("New.md"),
         &pages(vault),
         &[],
+        None,
     )
     .unwrap();
     let source = vault.resolve_existing(Path::new("Old.md")).unwrap();
@@ -473,6 +474,7 @@ fn interrupted_rename_recovers_frontmatter_overlay_and_markdown_together() {
             Path::new("New.md"),
             &expected,
             std::slice::from_ref(&overlay),
+            None,
         )
         .unwrap();
         let source = vault.resolve_existing(Path::new("Old.md")).unwrap();
@@ -486,6 +488,89 @@ fn interrupted_rename_recovers_frontmatter_overlay_and_markdown_together() {
     assert_eq!(vault.read_source("Reader.md").unwrap(), overlay.source);
     assert_eq!(vault.read_source("New.md").unwrap(), "original target\r\n");
     assert!(journal.directory.join("source-archive.md").is_file());
+}
+
+#[test]
+fn rename_rejects_invalid_metadata_snapshot_without_publishing() {
+    let (vault, expected, overlay) = overlay_fixture();
+    for snapshot in [
+        MetadataSnapshot {
+            prefix: PathBuf::from("../outside"),
+            files: BTreeMap::new(),
+        },
+        MetadataSnapshot {
+            prefix: PathBuf::from("schemas"),
+            files: BTreeMap::from([(PathBuf::from("settings.toml"), String::new())]),
+        },
+        MetadataSnapshot {
+            prefix: PathBuf::from("history"),
+            files: BTreeMap::new(),
+        },
+    ] {
+        assert!(
+            vault
+                .apply_rename_with_metadata_snapshot(
+                    Path::new("Old.md"),
+                    Path::new("New.md"),
+                    &expected,
+                    std::slice::from_ref(&overlay),
+                    &snapshot,
+                )
+                .is_err()
+        );
+        for page in &expected {
+            assert_eq!(vault.read_source(&page.path).unwrap(), page.source);
+        }
+        assert!(!vault.root().join("New.md").exists());
+        assert!(!vault.root().join(".selenite").join("transactions").exists());
+    }
+}
+
+#[test]
+fn recovery_rechecks_retained_metadata_snapshot_before_publication() {
+    let (vault, expected, overlay) = overlay_fixture();
+    let schema = "kind = 'relation'\r\n";
+    vault
+        .write_metadata("schemas/links.toml", None, schema)
+        .unwrap();
+    let journal = {
+        let _guard = exclusive(&vault).unwrap();
+        let snapshot = vault.metadata_snapshot("schemas").unwrap();
+        let journal = prepare_rename(
+            &vault,
+            Path::new("Old.md"),
+            Path::new("New.md"),
+            &expected,
+            std::slice::from_ref(&overlay),
+            Some(&snapshot),
+        )
+        .unwrap();
+        let source = vault.resolve_existing(Path::new("Old.md")).unwrap();
+        let archive = journal.directory.join("source-archive.md");
+        assert!(source.starts_with(vault.root()) && archive.starts_with(vault.root()));
+        fs::rename(source, archive).unwrap();
+        journal
+    };
+    vault
+        .write_metadata("schemas/links.toml", Some(schema), "kind = 'text'\n")
+        .unwrap();
+    assert_eq!(
+        vault.recover_pending_renames().unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    let reader = expected
+        .iter()
+        .find(|page| page.path == Path::new("Reader.md"))
+        .unwrap();
+    assert_eq!(vault.read_source("Reader.md").unwrap(), reader.source);
+    assert!(!vault.root().join("New.md").exists());
+    assert!(!journal.directory.join("committed").exists());
+    vault
+        .write_metadata("schemas/links.toml", Some("kind = 'text'\n"), schema)
+        .unwrap();
+    assert_eq!(vault.recover_pending_renames().unwrap().len(), 1);
+    assert_eq!(vault.read_source("Reader.md").unwrap(), overlay.source);
+    assert_eq!(vault.read_source("New.md").unwrap(), "original target\r\n");
 }
 
 #[cfg(unix)]

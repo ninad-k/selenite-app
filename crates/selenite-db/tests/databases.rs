@@ -165,10 +165,16 @@ fn rename_updates_only_typed_relations_and_preserves_core_body_edits() {
     let from = Path::new("Projects").join("Old.md");
     let to = Path::new("Archive").join("New.md");
     let core = selenite_core::plan_rename(&expected, &from, &to).unwrap();
-    let planned = store.plan_rename(&expected, &from, &to).unwrap();
+    let reviewed = store.plan_rename_reviewed(&expected, &from, &to).unwrap();
     store
         .vault()
-        .apply_rename_with_edits(&from, &to, &expected, &planned.pages)
+        .apply_rename_with_metadata_snapshot(
+            &from,
+            &to,
+            &expected,
+            &reviewed.plan.pages,
+            &reviewed.schema_snapshot,
+        )
         .unwrap();
     let task = Page::parse(
         "Rows/Task.md",
@@ -203,6 +209,71 @@ fn rename_updates_only_typed_relations_and_preserves_core_body_edits() {
         store.vault().read_source("Outside.md").unwrap(),
         "---\nproject: Old\n---\nunchanged\r\n"
     );
+}
+
+#[test]
+fn reviewed_rename_rejects_changed_added_or_removed_schemas_before_writes() {
+    for mutation in ["changed", "added", "removed"] {
+        let root = scratch();
+        write(&root, "Old.md", "target\r\n");
+        write(&root, "Rows/Task.md", "---\nproject: Old\n---\n[[Old]]\r\n");
+        let store = DatabaseStore::open(&root).unwrap();
+        let mut schema = relation_schema(DatabaseSource::Folder {
+            path: "Rows".into(),
+        });
+        store.save_schema(&schema, None).unwrap();
+        let before = store.load_schema_document("relations").unwrap().unwrap();
+        let expected = vault_pages(&store);
+        let reviewed = store
+            .plan_rename_reviewed(&expected, Path::new("Old.md"), Path::new("New.md"))
+            .unwrap();
+        assert_eq!(reviewed.schema_snapshot.prefix, Path::new("schemas"));
+        assert_eq!(
+            reviewed.schema_snapshot.files[&Path::new("schemas").join("relations.toml")],
+            before.source
+        );
+        match mutation {
+            "changed" => {
+                schema.fields[0].kind = PropertyType::Text;
+                store.save_schema(&schema, Some(&before.source)).unwrap();
+            }
+            "added" => {
+                schema.id = "additional".into();
+                store.save_schema(&schema, None).unwrap();
+            }
+            "removed" => {
+                // Retain the removed definition outside the snapshotted prefix.
+                let source = root
+                    .join(".selenite")
+                    .join("schemas")
+                    .join("relations.toml");
+                let retained = root.join(".selenite").join("relations-retained.toml");
+                assert!(source.starts_with(&root) && retained.starts_with(&root));
+                fs::rename(source, retained).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let error = store
+            .vault()
+            .apply_rename_with_metadata_snapshot(
+                Path::new("Old.md"),
+                Path::new("New.md"),
+                &expected,
+                &reviewed.plan.pages,
+                &reviewed.schema_snapshot,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "{mutation}"
+        );
+        for page in &expected {
+            assert_eq!(store.vault().read_source(&page.path).unwrap(), page.source);
+        }
+        assert!(!root.join("New.md").exists());
+        assert!(!root.join(".selenite").join("transactions").exists());
+    }
 }
 
 #[test]
