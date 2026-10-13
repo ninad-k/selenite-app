@@ -2,6 +2,7 @@
 
 use std::{
     fs, io,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -57,6 +58,15 @@ impl Vault {
         fs::read_to_string(self.resolve_existing(path.as_ref())?)
     }
 
+    /// Bound allocation before reading untrusted plugin or protocol content.
+    pub fn read_source_bounded(
+        &self,
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> io::Result<String> {
+        read_bounded(&self.resolve_existing(path.as_ref())?, max_bytes)
+    }
+
     /// Exclusively create a Markdown page and any missing ordinary directories.
     /// Returns false for an existing regular page, without changing its bytes.
     pub fn create_page(&self, path: impl AsRef<Path>, source: &str) -> io::Result<bool> {
@@ -91,6 +101,26 @@ pub fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("md"))
+}
+
+pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> io::Result<String> {
+    let file = fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds configured read limit",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 pub fn validate_relative(path: &Path) -> io::Result<()> {

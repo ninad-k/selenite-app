@@ -16,6 +16,28 @@ fn scratch() -> PathBuf {
     root.canonicalize().unwrap()
 }
 
+#[test]
+fn bounded_reads_reject_oversize_without_changing_files() {
+    let vault = Vault::open(scratch()).unwrap();
+    assert!(vault.create_page("Unicode.md", "café").unwrap());
+    assert_eq!(vault.read_source_bounded("Unicode.md", 5).unwrap(), "café");
+    assert!(vault.read_source_bounded("Unicode.md", 4).is_err());
+    assert!(vault.read_source_bounded("../outside.md", 100).is_err());
+    assert_eq!(vault.read_metadata_bounded("absent.toml", 1).unwrap(), None);
+    vault
+        .write_metadata("settings.toml", None, "enabled = true")
+        .unwrap();
+    assert!(vault.read_metadata_bounded("settings.toml", 5).is_err());
+    assert_eq!(
+        vault
+            .read_metadata_bounded("settings.toml", 100)
+            .unwrap()
+            .as_deref(),
+        Some("enabled = true")
+    );
+    assert!(vault.read_metadata_bounded("write.lock", 100).is_err());
+}
+
 fn pages(vault: &Vault) -> Vec<Page> {
     vault
         .markdown_paths()

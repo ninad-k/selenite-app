@@ -91,6 +91,28 @@ impl Vault {
         read_optional(&destination)
     }
 
+    /// Enforce a size limit before allocating an untrusted metadata document.
+    pub fn read_metadata_bounded(
+        &self,
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> io::Result<Option<String>> {
+        let path = path.as_ref();
+        metadata_path(path)?;
+        let root = metadata_root(self, false)?;
+        let destination = match destination(&root, path, false) {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        regular_file_or_absent(&destination)?;
+        match crate::vault::read_bounded(&destination, max_bytes) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// None requires absence; Some requires exact prior bytes. A conflict never
     /// overwrites either value. The original value and staged bytes are retained.
     pub fn write_metadata(
