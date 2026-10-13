@@ -1,6 +1,7 @@
-//! Selenite ai foundation.
+//! Opt-in BYO models and rebuildable hybrid retrieval over authoritative Markdown.
 
-/// Extension boundary for future language model providers.
-pub trait LlmProvider {
-    fn name(&self) -> &str;
-}
+mod provider;
+mod retrieval;
+
+pub use provider::{AiConfig, ChatMessage, EmbeddingProvider, HttpProvider, LlmProvider};
+pub use retrieval::{Answer, Citation, EmbeddingStats, ask, rebuild_embeddings, retrieve};
