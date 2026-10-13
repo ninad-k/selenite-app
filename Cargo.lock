@@ -863,7 +863,8 @@ version = "0.1.0"
 name = "selenite-cli"
 version = "0.1.0"
 dependencies = [
- "selenite-db",
+ "anyhow",
+ "selenite-core",
  "selenite-index",
 ]
 

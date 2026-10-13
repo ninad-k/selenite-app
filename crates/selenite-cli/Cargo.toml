@@ -12,6 +12,7 @@ name = "selenite"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
+selenite-core.workspace = true
 selenite-index.workspace = true
-selenite-db.workspace = true
 
