@@ -31,7 +31,7 @@ fn default_context() -> usize {
 impl AiConfig {
     pub fn load(vault: &Vault) -> Result<Self> {
         let source = vault
-            .read_metadata("ai.toml")?
+            .read_metadata_bounded("ai.toml", 64 * 1024)?
             .context("Configure .selenite/ai.toml before using AI")?;
         let config: Self = toml::from_str(&source)?;
         config.validate()?;
@@ -41,7 +41,8 @@ impl AiConfig {
     pub fn validate(&self) -> Result<()> {
         endpoint(&self.base_url)?;
         ensure!(
-            !self.chat_model.trim().is_empty() && !self.embedding_model.trim().is_empty(),
+            !self.enabled
+                || (!self.chat_model.trim().is_empty() && !self.embedding_model.trim().is_empty()),
             "model names must not be empty"
         );
         ensure!(

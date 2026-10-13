@@ -49,6 +49,7 @@ fn hash(value: &str) -> String {
 }
 
 fn chunks(vault: &Vault, config: &AiConfig) -> Result<Vec<(String, Citation)>> {
+    let _source_guard = vault.lock_shared()?;
     let mut output = Vec::new();
     for path in vault.markdown_paths()? {
         if !config.folders.is_empty()
@@ -59,7 +60,7 @@ fn chunks(vault: &Vault, config: &AiConfig) -> Result<Vec<(String, Citation)>> {
         {
             continue;
         }
-        let source = vault.read_source(&path)?;
+        let source = vault.read_source_bounded(&path, 8 * 1024 * 1024)?;
         let page = Page::parse(&path, &source)?;
         let source_hash = hash(&source);
         let mut excerpt = String::new();
@@ -81,6 +82,14 @@ fn chunks(vault: &Vault, config: &AiConfig) -> Result<Vec<(String, Citation)>> {
                 end = line_index + 1;
             }
             if line.is_empty() {
+                if chars >= 1600 {
+                    if !excerpt.trim().is_empty() {
+                        push_chunk(&mut output, &page, &source_hash, start, end, &excerpt);
+                    }
+                    excerpt.clear();
+                    chars = 0;
+                    start = line_index + 1;
+                }
                 excerpt.push('\n');
                 chars += 1;
                 end = line_index + 1;
@@ -302,7 +311,9 @@ pub fn ask(
     let text = provider.complete(&messages)?;
     let mut found = false;
     for suffix in text.split("[S").skip(1) {
-        let number = suffix.split(']').next().context("malformed citation")?;
+        let (number, _) = suffix
+            .split_once(']')
+            .context("unterminated source citation")?;
         let index: usize = number
             .parse()
             .context("model returned an invalid citation")?;

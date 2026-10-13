@@ -18,6 +18,10 @@ impl EmbeddingProvider for Models {
         "test-semantic-v1".to_owned()
     }
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        assert!(
+            texts.iter().all(|text| text.chars().count() < 2000),
+            "source chunk exceeded its target bound"
+        );
         Ok(texts
             .iter()
             .map(|text| {
@@ -164,4 +168,25 @@ fn opt_in_scope_and_provider_validation() {
     assert!(config.validate().is_err());
     config.base_url = "https://secret@example.com/v1".to_owned();
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn blank_lines_are_bounded_and_unterminated_citations_are_rejected() {
+    let (vault, config) = fixture();
+    vault
+        .create_page(
+            "Spacing.md",
+            &format!("# Spacing\n{}A car.\n", "\n".repeat(6000)),
+        )
+        .unwrap();
+    let model = Models {
+        answer: "A car [S1",
+    };
+    rebuild_embeddings(&vault, &config, &model).unwrap();
+    assert!(
+        ask(&vault, &config, &model, "car")
+            .unwrap_err()
+            .to_string()
+            .contains("unterminated")
+    );
 }
