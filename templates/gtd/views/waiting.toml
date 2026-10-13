@@ -1,0 +1,13 @@
+id = "waiting"
+name = "Waiting for"
+database = "gtd"
+layout = "table"
+group_by = "waiting_for"
+
+[filter]
+op = "eq"
+field = "status"
+value = { type = "select", value = "waiting" }
+
+[[sort]]
+field = "due"

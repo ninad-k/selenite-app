@@ -1,0 +1,12 @@
+id = "inbox"
+name = "Inbox"
+database = "gtd"
+layout = "table"
+
+[filter]
+op = "eq"
+field = "status"
+value = { type = "select", value = "inbox" }
+
+[[sort]]
+field = "$title"

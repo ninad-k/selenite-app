@@ -1,0 +1,55 @@
+id = "gtd"
+name = "GTD"
+
+[source]
+kind = "tag"
+tag = "gtd"
+
+[[fields]]
+name = "status"
+type = "select"
+required = true
+options = ["inbox", "next", "waiting", "someday", "done"]
+
+[[fields]]
+name = "kind"
+type = "select"
+required = true
+options = ["action", "project"]
+
+[[fields]]
+name = "contexts"
+type = "multi_select"
+options = ["@home", "@computer", "@office", "@errands", "@calls"]
+
+[[fields]]
+name = "project"
+type = "relation"
+
+[[fields]]
+name = "due"
+type = "date"
+
+[[fields]]
+name = "review_date"
+type = "date"
+
+[[fields]]
+name = "waiting_for"
+type = "text"
+
+[[fields]]
+name = "priority"
+type = "number"
+
+[[fields]]
+name = "reviewed"
+type = "checkbox"
+
+[[fields]]
+name = "resource"
+type = "url"
+
+[[fields]]
+name = "attachment"
+type = "file"

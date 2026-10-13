@@ -1,0 +1,13 @@
+id = "projects"
+name = "Projects"
+database = "gtd"
+layout = "gallery"
+gallery_field = "attachment"
+
+[filter]
+op = "eq"
+field = "kind"
+value = { type = "select", value = "project" }
+
+[[sort]]
+field = "$title"

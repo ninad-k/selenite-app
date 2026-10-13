@@ -1,0 +1,12 @@
+id = "someday"
+name = "Someday / maybe"
+database = "gtd"
+layout = "table"
+
+[filter]
+op = "eq"
+field = "status"
+value = { type = "select", value = "someday" }
+
+[[sort]]
+field = "$title"

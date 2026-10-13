@@ -9,4 +9,10 @@ workspace = true
 
 [dependencies]
 selenite-core.workspace = true
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+toml = "1.1.8"
+url = "2.5"
 

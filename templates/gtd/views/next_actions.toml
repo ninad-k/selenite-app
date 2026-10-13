@@ -1,0 +1,19 @@
+id = "next_actions"
+name = "Next actions"
+database = "gtd"
+layout = "board"
+group_by = "contexts"
+
+[filter]
+op = "all"
+filters = [
+  { op = "eq", field = "status", value = { type = "select", value = "next" } },
+  { op = "eq", field = "kind", value = { type = "select", value = "action" } },
+]
+
+[[sort]]
+field = "priority"
+descending = true
+
+[[sort]]
+field = "due"

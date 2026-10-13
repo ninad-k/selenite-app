@@ -1,0 +1,20 @@
+id = "weekly_review"
+name = "Weekly review"
+database = "gtd"
+layout = "calendar"
+calendar_field = "review_date"
+
+[filter]
+op = "any"
+filters = [
+  { op = "eq", field = "status", value = { type = "select", value = "inbox" } },
+  { op = "eq", field = "status", value = { type = "select", value = "next" } },
+  { op = "eq", field = "status", value = { type = "select", value = "waiting" } },
+  { op = "eq", field = "status", value = { type = "select", value = "someday" } },
+]
+
+[[sort]]
+field = "review_date"
+
+[[sort]]
+field = "$title"
