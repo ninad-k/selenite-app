@@ -1,0 +1,4 @@
+# Repository sources and fixture notes have deterministic line endings.
+* text=auto eol=lf
+*.png binary
+*.ico binary

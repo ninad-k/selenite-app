@@ -189,17 +189,30 @@ fn parse_blocks(body: &str, offset: usize) -> (Vec<Block>, Vec<Range<usize>>) {
         | Options::ENABLE_FOOTNOTES;
     let mut stack = Vec::new();
     let mut blocks = Vec::new();
-    let mut excluded = Vec::new();
-    for (event, range) in Parser::new_ext(body, options).into_offset_iter() {
+    let parser = Parser::new_ext(body, options);
+    let mut excluded: Vec<_> = parser
+        .reference_definitions()
+        .iter()
+        .map(|(_, definition)| definition.span.start + offset..definition.span.end + offset)
+        .collect();
+    for (event, range) in parser.into_offset_iter() {
         match event {
-            Event::Start(tag) => stack.push((block_kind(&tag), range.start)),
+            Event::Start(tag) => {
+                let exclude = matches!(
+                    tag,
+                    Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::Link { .. } | Tag::Image { .. }
+                );
+                stack.push((block_kind(&tag), range.start, exclude));
+            }
             Event::End(_) => {
-                if let Some((Some(kind), start)) = stack.pop() {
+                if let Some((kind, start, exclude)) = stack.pop() {
                     let span = start + offset..range.end + offset;
-                    if matches!(kind, BlockKind::Code | BlockKind::Html) {
+                    if exclude {
                         excluded.push(span.clone());
                     }
-                    blocks.push(make_block(kind, span, body, offset));
+                    if let Some(kind) = kind {
+                        blocks.push(make_block(kind, span, body, offset));
+                    }
                 }
             }
             Event::Code(_) | Event::InlineHtml(_) => {
