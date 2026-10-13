@@ -29,6 +29,7 @@ jobs:
         working-directory: apps/desktop
         run: |
           npm ci
+          npm test
           npm run build
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -36,8 +37,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
