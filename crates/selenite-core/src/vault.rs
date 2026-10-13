@@ -2,7 +2,6 @@
 
 use std::{
     fs, io,
-    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -36,7 +35,10 @@ impl Vault {
                 let entry = entry?;
                 let kind = entry.file_type()?;
                 let name = entry.file_name();
-                if name == ".selenite" || name == ".git" || kind.is_symlink() {
+                if name.to_string_lossy().eq_ignore_ascii_case(".selenite")
+                    || name.to_string_lossy().eq_ignore_ascii_case(".git")
+                    || kind.is_symlink()
+                {
                     continue;
                 }
                 let path = relative.join(name);
@@ -58,52 +60,7 @@ impl Vault {
     /// Exclusively create a Markdown page and any missing ordinary directories.
     /// Returns false for an existing regular page, without changing its bytes.
     pub fn create_page(&self, path: impl AsRef<Path>, source: &str) -> io::Result<bool> {
-        let path = path.as_ref();
-        crate::validate_page_path(path)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-        let mut directory = self.root.clone();
-        for component in path.parent().unwrap_or(Path::new("")).components() {
-            directory.push(component);
-            match fs::create_dir(&directory) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-            let metadata = fs::symlink_metadata(&directory)?;
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || !directory.canonicalize()?.starts_with(&self.root)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "page ancestor is not a regular vault directory",
-                ));
-            }
-        }
-        let destination = self.root.join(path);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-        {
-            Ok(mut file) => {
-                file.write_all(source.as_bytes())?;
-                file.sync_all()?;
-                Ok(true)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let metadata = fs::symlink_metadata(destination)?;
-                if metadata.is_file() && !metadata.file_type().is_symlink() {
-                    Ok(false)
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "page destination is not a regular file",
-                    ))
-                }
-            }
-            Err(error) => Err(error),
-        }
+        crate::persistence::create_page(self, path.as_ref(), source)
     }
 
     /// Resolve a relative path without following links, including linked ancestors.
@@ -141,12 +98,28 @@ pub fn validate_relative(path: &Path) -> io::Result<()> {
         .to_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "paths must be UTF-8"))?;
     if text.is_empty()
-        || text.contains(':')
-        || text.contains('\0')
-        || !path.components().all(|c| matches!(c, Component::Normal(_)))
         || text
-            .split(['/', '\\'])
-            .any(|c| c == ".." || c == "." || c.is_empty() || c == ".selenite" || c == ".git")
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'))
+        || (cfg!(not(windows)) && text.contains('\\'))
+        || !path.components().all(|c| matches!(c, Component::Normal(_)))
+        || text.split(['/', '\\']).any(|c| {
+            let stem = c.split('.').next().unwrap_or_default().to_ascii_uppercase();
+            let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || ["COM", "LPT"].iter().any(|prefix| {
+                    stem.strip_prefix(prefix).is_some_and(|suffix| {
+                        matches!(
+                            suffix,
+                            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                        )
+                    })
+                });
+            c.is_empty()
+                || c.ends_with(['.', ' '])
+                || reserved
+                || c.eq_ignore_ascii_case(".selenite")
+                || c.eq_ignore_ascii_case(".git")
+        })
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
