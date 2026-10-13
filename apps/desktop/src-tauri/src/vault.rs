@@ -5,7 +5,7 @@ use std::{fs, io, path::Path};
 use anyhow::{Context, Result, ensure};
 use chrono::NaiveDate;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
-use selenite_core::{Page, vault::Vault};
+use selenite_core::{LinkResolver, Page, vault::Vault};
 use selenite_index::path_key;
 use serde::Serialize;
 
@@ -31,6 +31,7 @@ pub struct OpenedVault {
     pub created: bool,
 }
 
+#[derive(Clone)]
 pub struct VaultSession {
     vault: Vault,
 }
@@ -48,6 +49,21 @@ impl VaultSession {
         self.vault.root()
     }
 
+    pub fn vault(&self) -> &Vault {
+        &self.vault
+    }
+
+    pub fn preview(&self, path: &str, source: &str) -> Result<PreviewPage> {
+        let page = Page::parse(path, source)?;
+        let html = self.render_page(&page)?;
+        Ok(PreviewPage {
+            path: path_key(&page.path),
+            title: page.title,
+            source: source.to_owned(),
+            html,
+        })
+    }
+
     pub fn read_page(&self, path: &str) -> Result<PreviewPage> {
         let relative = Path::new(path);
         selenite_core::validate_page_path(relative)?;
@@ -56,12 +72,93 @@ impl VaultSession {
             .read_source(relative)
             .with_context(|| format!("read {path}"))?;
         let page = Page::parse(relative, &source).with_context(|| format!("parse {path}"))?;
+        let html = self.render_page(&page)?;
         Ok(PreviewPage {
             path: path_key(&page.path),
             title: page.title,
-            html: render(&page.body),
+            html,
             source,
         })
+    }
+
+    fn render_page(&self, page: &Page) -> Result<String> {
+        if page.links.is_empty() {
+            return Ok(render(&page.body));
+        }
+        let mut paths = self.vault.markdown_paths()?;
+        if !paths.contains(&page.path) {
+            paths.push(page.path.clone());
+        }
+        let resolver = LinkResolver::new(paths)?;
+        let offset = page.source.len() - page.body.len();
+        let mut body = page.body.clone();
+        let mut prefix = "SELENITEWIKITOKEN".to_owned();
+        while page.source.contains(&prefix) {
+            prefix.push('Z');
+        }
+        let mut replacements = Vec::new();
+        for (number, link) in page.links.iter().enumerate().rev() {
+            let Ok(target) = resolver.resolve(&page.path, &link.target) else {
+                continue;
+            };
+            let token = format!("{prefix}{number}END");
+            let label = link.alias.as_deref().unwrap_or(if link.target.is_empty() {
+                &page.title
+            } else {
+                &link.target
+            });
+            let href = format!(
+                "#page={}&fragment={}",
+                percent(&path_key(&target)),
+                percent(link.heading.as_deref().unwrap_or_default())
+            );
+            let anchor = format!("<a href=\"{href}\">{}</a>", escape(label));
+            let mut embedded = None;
+            if link.embedded {
+                let source = if target == page.path {
+                    Some(page.source.clone())
+                } else {
+                    self.vault.read_source_bounded(&target, 1024 * 1024).ok()
+                };
+                // An unavailable or malformed embedded note must not prevent opening
+                // or saving the containing note. Its navigation link remains usable.
+                if let Some(target_page) =
+                    source.and_then(|source| Page::parse(&target, &source).ok())
+                {
+                    let excerpt = match link.heading.as_deref() {
+                        Some(fragment) if fragment.starts_with('^') => target_page
+                            .blocks
+                            .iter()
+                            .find(|block| block.id.as_deref() == Some(&fragment[1..]))
+                            .map(|block| block.text.clone()),
+                        None | Some("") => Some(target_page.body),
+                        Some(heading) => heading_section(&target_page.body, heading),
+                    };
+                    if let Some(excerpt) = excerpt {
+                        let clipped: String = excerpt.chars().take(20_000).collect();
+                        let truncated = if excerpt.chars().count() > 20_000 {
+                            "<p>Open the linked note to read the rest.</p>"
+                        } else {
+                            ""
+                        };
+                        embedded = Some(format!(
+                            "<section class=\"embedded-note\"><header>{anchor}</header>{}{truncated}</section>",
+                            render(&clipped)
+                        ));
+                    }
+                }
+            }
+            body.replace_range(link.span.start - offset..link.span.end - offset, &token);
+            replacements.push((token, anchor, embedded));
+        }
+        let mut html = render(&body);
+        for (token, anchor, embedded) in replacements {
+            if let Some(embedded) = embedded {
+                html = html.replace(&format!("<p>{token}</p>"), &embedded);
+            }
+            html = html.replace(&token, &anchor);
+        }
+        Ok(html)
     }
 
     pub fn today(&self, date: &str) -> Result<OpenedVault> {
@@ -90,7 +187,15 @@ impl VaultSession {
             Err(error) => return Err(error).context("resolve daily note"),
         };
         let today = path_key(&path);
-        let page = self.read_page(&today)?;
+        let mut opened = self.snapshot(&today, date)?;
+        opened.created = created;
+        Ok(opened)
+    }
+
+    /// Refresh presentation around an existing page without creating today's note.
+    pub fn snapshot(&self, path: &str, date: &str) -> Result<OpenedVault> {
+        let today = path_key(&Path::new("Journal").join(format!("{date}.md")));
+        let page = self.read_page(path)?;
         let files = self
             .vault
             .markdown_paths()?
@@ -114,7 +219,7 @@ impl VaultSession {
             files,
             today,
             page,
-            created,
+            created: false,
         })
     }
 
@@ -180,4 +285,49 @@ fn safe_link(destination: &str) -> bool {
         || destination.starts_with("http://")
         || destination.starts_with("mailto:")
         || (!destination.contains(':') && !destination.starts_with("//"))
+}
+
+fn percent(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    output
+}
+
+fn escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn heading_section(body: &str, heading: &str) -> Option<String> {
+    let mut selected = Vec::new();
+    let mut depth = None;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let level = trimmed
+            .chars()
+            .take_while(|character| *character == '#')
+            .count();
+        let is_heading =
+            (1..=6).contains(&level) && trimmed.chars().nth(level).is_some_and(char::is_whitespace);
+        if let Some(depth) = depth {
+            if is_heading && level <= depth {
+                break;
+            }
+            selected.push(line);
+        } else if is_heading && trimmed[level..].trim().trim_end_matches('#').trim() == heading {
+            depth = Some(level);
+            selected.push(line);
+        }
+    }
+    depth.map(|_| selected.join("\n"))
 }

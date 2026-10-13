@@ -43,6 +43,32 @@ fn write(root: &Path, relative: impl AsRef<Path>, source: &str) {
 }
 
 #[test]
+fn preview_resolves_wikilinks_and_block_embeds_without_rendering_code_or_html() {
+    let root = scratch();
+    write(
+        &root,
+        "Target.md",
+        "# Target\n\nA quoted fact. ^fact\n\n<script>bad()</script>\n",
+    );
+    write(
+        &root,
+        "Source.md",
+        "[[Target|<img src=x>]]\n\n![[Target#^fact]]\n\n`[[Target]]`\n",
+    );
+    let (session, _) = VaultSession::open(&root, "2026-10-13").unwrap();
+    let preview = session.read_page("Source.md").unwrap();
+    assert!(
+        preview.html.contains("#page=Target.md&amp;fragment=")
+            || preview.html.contains("#page=Target.md&fragment=")
+    );
+    assert!(preview.html.contains("&lt;img src=x&gt;"));
+    assert!(preview.html.contains("embedded-note"));
+    assert!(preview.html.contains("A quoted fact."));
+    assert!(preview.html.contains("<code>[[Target]]</code>"));
+    assert!(!preview.html.contains("<script>"));
+}
+
+#[test]
 fn creates_default_today_and_never_overwrites_existing_note() {
     let root = scratch();
     let (session, opened) = VaultSession::open(&root, "2026-10-13").unwrap();
@@ -185,4 +211,40 @@ fn rejects_symlink_journal_and_custom_template() {
     .unwrap();
     assert!(VaultSession::open(&second, "2026-10-13").is_err());
     assert!(!second.join("Journal").exists());
+}
+
+#[test]
+fn failed_embed_does_not_block_containing_note() {
+    let root = scratch();
+    let (session, _) = VaultSession::open(&root, "2026-10-13").unwrap();
+    write(&root, "Broken.md", "---\ninvalid: [\n---\n");
+    write(&root, "Large.md", &"x".repeat(1024 * 1024 + 1));
+    let source = "# Keep editing\n\n![[Broken]]\n\n![[Large]]\n";
+    write(&root, "Reader.md", source);
+    let page = session.read_page("Reader.md").unwrap();
+    assert_eq!(page.source, source);
+    assert!(page.html.contains("#page=Broken.md"));
+    assert!(page.html.contains("#page=Large.md"));
+    assert!(session.preview("Reader.md", source).is_ok());
+}
+
+#[test]
+fn renamed_today_snapshot_does_not_recreate_original_or_read_template() {
+    let root = scratch();
+    let date = "2026-10-13";
+    let (session, opened) = VaultSession::open(&root, date).unwrap();
+    let from = Path::new(&opened.today);
+    let to = Path::new("Archive.md");
+    let page = selenite_core::Page::parse(from, &opened.page.source).unwrap();
+    session.vault().apply_rename(from, to, &[page]).unwrap();
+    write(
+        &root,
+        ".selenite/templates/daily.md",
+        "---\nbroken: [\n---\n",
+    );
+    let snapshot = session.snapshot("Archive.md", date).unwrap();
+    assert_eq!(snapshot.page.path, "Archive.md");
+    assert!(!snapshot.created);
+    assert!(!root.join(from).exists());
+    assert_eq!(snapshot.files, ["Archive.md"]);
 }

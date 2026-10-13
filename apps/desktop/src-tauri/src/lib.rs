@@ -1,6 +1,10 @@
 //! Native shell. Vault source access stays in the Rust session boundary.
 
+mod commands;
 pub mod vault;
+use commands::*;
+mod services;
+use services::*;
 
 use std::{
     fs,
@@ -21,6 +25,7 @@ struct AppState {
     preload: Mutex<Option<JoinHandle<CommandResult<PreparedVault>>>>,
     started: Instant,
     report: Option<PathBuf>,
+    catalog: Mutex<Option<(PathBuf, selenite_plugin_host::VerifiedCatalog)>>,
 }
 
 type SharedState = Arc<AppState>;
@@ -185,6 +190,7 @@ pub fn run() {
         preload: Mutex::new(preload),
         started,
         report: std::env::var_os("SELENITE_SMOKE_REPORT").map(PathBuf::from),
+        catalog: Mutex::new(None),
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -195,7 +201,39 @@ pub fn run() {
             read_page,
             open_today,
             frontend_ready,
-            smoke_exit
+            smoke_exit,
+            preview_markdown,
+            save_page,
+            create_page,
+            refresh_vault,
+            search_pages,
+            page_links,
+            rename_preview,
+            apply_rename,
+            list_databases,
+            list_views,
+            query_view,
+            install_gtd_templates,
+            update_database_row,
+            create_database_row,
+            read_service_config,
+            save_service_config,
+            ai_index,
+            ask_vault,
+            read_definition,
+            save_definition,
+            sync_plan,
+            sync_run,
+            list_installed_plugins,
+            plugin_catalog,
+            install_plugin,
+            prepare_plugin_run,
+            run_plugin,
+            pro_status,
+            install_entitlement,
+            recover_renames,
+            read_sync_source,
+            sync_resolve
         ])
         .setup(|app| {
             let mut window =
