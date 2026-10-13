@@ -5,11 +5,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use selenite_core::{Page, validate_page_path, vault::Vault};
+use selenite_core::{LinkResolver, Page, RenamePlan, validate_page_path, vault::Vault};
 use serde_yaml::{Mapping, Value};
 
 use crate::{
-    Cell, DatabaseSchema, DatabaseSource, QueryResult, Row, SavedView, Stored,
+    Cell, DatabaseSchema, DatabaseSource, PropertyType, QueryResult, Row, SavedView, Stored,
     model::{portable_path, validate_id},
     query_rows,
 };
@@ -30,6 +30,105 @@ impl DatabaseStore {
 
     pub fn vault(&self) -> &Vault {
         &self.vault
+    }
+
+    /// Plan Markdown and schema-typed relation changes together. Membership and
+    /// field types are taken from the original pages; text and unknown YAML
+    /// properties are never inferred to be relations. Ambiguous targets remain
+    /// untouched. Apply these final pages through `apply_rename_with_edits`.
+    pub fn plan_rename(&self, pages: &[Page], from: &Path, to: &Path) -> Result<RenamePlan> {
+        let _guard = self.vault.lock_shared()?;
+        let schemas = self.list_schemas()?;
+        let originals = pages
+            .iter()
+            .map(|page| Page::parse(&page.path, &page.source))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut plan = selenite_core::plan_rename(&originals, from, to)?;
+        let before = LinkResolver::new(originals.iter().map(|page| &page.path))?;
+        let after = LinkResolver::new(
+            originals
+                .iter()
+                .map(|page| if page.path == from { to } else { &page.path }),
+        )?;
+        let mut changed: BTreeMap<PathBuf, Page> = plan
+            .pages
+            .into_iter()
+            .map(|page| (page.path.clone(), page))
+            .collect();
+        for original in &originals {
+            let target = if original.path == from {
+                to
+            } else {
+                &original.path
+            };
+            let base = changed.get(target).unwrap_or(original);
+            let mut frontmatter = base.frontmatter.clone();
+            let applicable: Vec<_> = schemas
+                .iter()
+                .filter(|schema| belongs(schema, original))
+                .collect();
+            let mut relation_fields = BTreeMap::new();
+            for schema in &applicable {
+                for field in &schema.fields {
+                    if field.kind != PropertyType::Relation {
+                        continue;
+                    }
+                    ensure!(
+                        applicable
+                            .iter()
+                            .flat_map(|schema| &schema.fields)
+                            .filter(|other| other.name == field.name)
+                            .all(|other| other.kind == PropertyType::Relation),
+                        "{} property {} has conflicting relation/text schemas",
+                        original.path.display(),
+                        field.name
+                    );
+                    relation_fields.entry(field.name.clone()).or_insert(field);
+                }
+            }
+            for (name, field) in relation_fields {
+                let key = Value::String(name);
+                let Some(value) = frontmatter.get(&key) else {
+                    continue;
+                };
+                if value.is_null() {
+                    continue;
+                }
+                let Cell::Relation(values) = field.parse(Some(value)).with_context(|| {
+                    format!("{} property {}", original.path.display(), field.name)
+                })?
+                else {
+                    unreachable!("relation fields parse as relations");
+                };
+                let rewritten = values
+                    .iter()
+                    .map(|value| {
+                        rewrite_relation(&before, &after, &original.path, target, from, to, value)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                if rewritten == values {
+                    continue;
+                }
+                field.validate_cell(&Cell::Relation(rewritten.clone()))?;
+                let replacement = if value.is_string() {
+                    Value::String(
+                        rewritten
+                            .into_iter()
+                            .next()
+                            .expect("scalar relation has one value"),
+                    )
+                } else {
+                    Value::Sequence(rewritten.into_iter().map(Value::String).collect())
+                };
+                frontmatter.insert(key, replacement);
+            }
+            if frontmatter != base.frontmatter {
+                let source = with_frontmatter(base, &frontmatter)?;
+                changed.insert(target.to_owned(), Page::parse(target, &source)?);
+            }
+        }
+        plan.pages = changed.into_values().collect();
+        Ok(plan)
     }
 
     pub fn load_schema(&self, id: &str) -> Result<Option<DatabaseSchema>> {
@@ -133,6 +232,7 @@ impl DatabaseStore {
 
     pub fn rows(&self, schema: &DatabaseSchema) -> Result<Vec<Row>> {
         schema.validate()?;
+        let _source_guard = self.vault.lock_shared()?;
         let mut rows = Vec::new();
         for path in self.vault.markdown_paths()? {
             if let DatabaseSource::Folder { path: folder } = &schema.source
@@ -274,6 +374,68 @@ fn path_key(path: &Path) -> String {
         .join("/")
 }
 
+fn rewrite_relation(
+    before: &LinkResolver,
+    after: &LinkResolver,
+    original_source: &Path,
+    new_source: &Path,
+    from: &Path,
+    to: &Path,
+    value: &str,
+) -> Result<String> {
+    let wrapped = value
+        .strip_prefix("[[")
+        .and_then(|value| value.strip_suffix("]]"));
+    let target = wrapped.unwrap_or(value);
+    let Ok(previous) = before.resolve(original_source, target) else {
+        return Ok(value.to_owned());
+    };
+    let desired = if previous == from { to } else { &previous };
+    if after.resolve(new_source, target).as_deref() == Ok(desired) {
+        return Ok(value.to_owned());
+    }
+    let include_extension = target.to_ascii_lowercase().ends_with(".md");
+    let replacement = if desired
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        let mut key = path_key(desired);
+        if !include_extension {
+            key.truncate(key.len() - 3);
+        }
+        key
+    } else {
+        let depth = new_source
+            .parent()
+            .map_or(0, |parent| parent.components().count());
+        let name = if include_extension {
+            desired.file_name()
+        } else {
+            desired.file_stem()
+        }
+        .and_then(|part| part.to_str())
+        .context("invalid relation destination")?;
+        format!(
+            "{}{name}",
+            if depth == 0 {
+                "./".into()
+            } else {
+                "../".repeat(depth)
+            }
+        )
+    };
+    ensure!(
+        after.resolve(new_source, &replacement).as_deref() == Ok(desired),
+        "cannot preserve relation target for {}",
+        original_source.display()
+    );
+    Ok(if wrapped.is_some() {
+        format!("[[{replacement}]]")
+    } else {
+        replacement
+    })
+}
+
 fn belongs(schema: &DatabaseSchema, page: &Page) -> bool {
     match &schema.source {
         DatabaseSource::Folder { path } => {
@@ -297,6 +459,7 @@ fn row_from_page(schema: &DatabaseSchema, page: &Page) -> Result<Row> {
         "{} has non-string YAML property names",
         page.path.display()
     );
+    let resolver = LinkResolver::new(std::iter::empty::<&Path>())?;
     let cells = schema
         .fields
         .iter()
@@ -304,6 +467,23 @@ fn row_from_page(schema: &DatabaseSchema, page: &Page) -> Result<Row> {
             let value = field
                 .parse(page.frontmatter.get(Value::String(field.name.clone())))
                 .with_context(|| format!("{} property {}", page.path.display(), field.name))?;
+            if let Cell::Relation(values) = &value {
+                for value in values {
+                    let target = value
+                        .strip_prefix("[[")
+                        .and_then(|value| value.strip_suffix("]]"))
+                        .unwrap_or(value);
+                    ensure!(
+                        !matches!(
+                            resolver.resolve(&page.path, target),
+                            Err(selenite_core::ResolveError::Invalid(_))
+                        ),
+                        "{} property {} has a relation path outside the vault",
+                        page.path.display(),
+                        field.name
+                    );
+                }
+            }
             Ok((field.name.clone(), value))
         })
         .collect::<Result<_>>()?;

@@ -311,8 +311,19 @@ fn valid_relation(value: &str) -> bool {
         return false;
     }
     let resolver = LinkResolver::new(std::iter::empty::<&Path>()).expect("empty resolver is valid");
+    // Validate syntax independently of the row's location. Actual resolution
+    // uses the referring page and checks whether `..` escapes that vault root.
+    let mut source = std::path::PathBuf::new();
+    for _ in 0..target
+        .split(['/', '\\'])
+        .filter(|part| *part == "..")
+        .count()
+    {
+        source.push("ancestor");
+    }
+    source.push("reference.md");
     !matches!(
-        resolver.resolve(Path::new("reference.md"), target),
+        resolver.resolve(&source, target),
         Err(ResolveError::Invalid(_))
     )
 }

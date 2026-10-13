@@ -117,6 +117,234 @@ fn complete_cells() -> BTreeMap<String, Cell> {
     ])
 }
 
+fn vault_pages(store: &DatabaseStore) -> Vec<Page> {
+    store
+        .vault()
+        .markdown_paths()
+        .unwrap()
+        .iter()
+        .map(|path| Page::parse(path, &store.vault().read_source(path).unwrap()).unwrap())
+        .collect()
+}
+
+fn relation_schema(source: DatabaseSource) -> DatabaseSchema {
+    DatabaseSchema {
+        id: "relations".into(),
+        name: "Relations".into(),
+        source,
+        fields: vec![
+            field("project", PropertyType::Relation),
+            field("summary", PropertyType::Text),
+        ],
+    }
+}
+
+#[test]
+fn rename_updates_only_typed_relations_and_preserves_core_body_edits() {
+    let root = scratch();
+    write(&root, "Projects/Old.md", "target\r\n");
+    write(&root, "A/Duplicate.md", "duplicate a");
+    write(&root, "B/Duplicate.md", "duplicate b");
+    write(
+        &root,
+        "Rows/Task.md",
+        "---\r\nproject: ['[[Old]]', Missing, Duplicate]\r\nsummary: '[[Old]]'\r\nunknown: Old\r\n---\r\nα [[Old#^block|alias]]\r\n`[[Old]]`\r\n",
+    );
+    write(&root, "Rows/Scalar.md", "---\nproject: Old\n---\nbody\r\n");
+    write(&root, "Outside.md", "---\nproject: Old\n---\nunchanged\r\n");
+    let store = DatabaseStore::open(&root).unwrap();
+    store
+        .save_schema(
+            &relation_schema(DatabaseSource::Folder {
+                path: "Rows".into(),
+            }),
+            None,
+        )
+        .unwrap();
+    let expected = vault_pages(&store);
+    let from = Path::new("Projects").join("Old.md");
+    let to = Path::new("Archive").join("New.md");
+    let core = selenite_core::plan_rename(&expected, &from, &to).unwrap();
+    let planned = store.plan_rename(&expected, &from, &to).unwrap();
+    store
+        .vault()
+        .apply_rename_with_edits(&from, &to, &expected, &planned.pages)
+        .unwrap();
+    let task = Page::parse(
+        "Rows/Task.md",
+        &store.vault().read_source("Rows/Task.md").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        task.body,
+        core.pages
+            .iter()
+            .find(|page| page.path == Path::new("Rows").join("Task.md"))
+            .unwrap()
+            .body
+    );
+    assert_eq!(
+        task.frontmatter["project"],
+        serde_yaml::Value::Sequence(vec![
+            "[[Archive/New]]".into(),
+            "Missing".into(),
+            "Duplicate".into()
+        ])
+    );
+    assert_eq!(task.frontmatter["summary"].as_str(), Some("[[Old]]"));
+    assert_eq!(task.frontmatter["unknown"].as_str(), Some("Old"));
+    let scalar = Page::parse(
+        "Rows/Scalar.md",
+        &store.vault().read_source("Rows/Scalar.md").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(scalar.frontmatter["project"].as_str(), Some("Archive/New"));
+    assert_eq!(
+        store.vault().read_source("Outside.md").unwrap(),
+        "---\nproject: Old\n---\nunchanged\r\n"
+    );
+}
+
+#[test]
+fn moved_row_keeps_relative_relation_targets_using_its_original_schema() {
+    let root = scratch();
+    write(&root, "Root.md", "root");
+    write(&root, "Rows/Peer.md", "peer");
+    write(
+        &root,
+        "Rows/Task.md",
+        "---\r\nproject: ['../Root', './Peer']\r\n---\r\n[[./Peer]]\r\n",
+    );
+    let store = DatabaseStore::open(&root).unwrap();
+    let schema = relation_schema(DatabaseSource::Folder {
+        path: "Rows".into(),
+    });
+    store.save_schema(&schema, None).unwrap();
+    assert!(store.rows(&schema).is_ok());
+    let expected = vault_pages(&store);
+    let from = Path::new("Rows").join("Task.md");
+    let to = Path::new("Deep").join("Archive").join("Task.md");
+    let planned = store.plan_rename(&expected, &from, &to).unwrap();
+    store
+        .vault()
+        .apply_rename_with_edits(&from, &to, &expected, &planned.pages)
+        .unwrap();
+    let moved = Page::parse(&to, &store.vault().read_source(&to).unwrap()).unwrap();
+    assert_eq!(
+        moved.frontmatter["project"],
+        serde_yaml::Value::Sequence(vec!["../../Root".into(), "Rows/Peer".into()])
+    );
+    let resolver =
+        selenite_core::LinkResolver::new(store.vault().markdown_paths().unwrap()).unwrap();
+    for (value, expected) in [
+        ("../../Root", PathBuf::from("Root.md")),
+        ("Rows/Peer", Path::new("Rows").join("Peer.md")),
+    ] {
+        assert_eq!(resolver.resolve(&to, value).unwrap(), expected);
+    }
+    assert_eq!(
+        resolver.resolve(&to, &moved.links[0].target).unwrap(),
+        Path::new("Rows").join("Peer.md")
+    );
+}
+
+#[test]
+fn rename_qualifies_unrelated_relations_made_ambiguous_by_new_basename() {
+    let root = scratch();
+    write(&root, "Old.md", "old");
+    write(&root, "Peer.md", "root peer");
+    write(
+        &root,
+        "Rows/Task.md",
+        "---\nproject: [Peer, Old]\n---\nbody",
+    );
+    let store = DatabaseStore::open(&root).unwrap();
+    store
+        .save_schema(
+            &relation_schema(DatabaseSource::Folder {
+                path: "Rows".into(),
+            }),
+            None,
+        )
+        .unwrap();
+    let expected = vault_pages(&store);
+    let to = Path::new("Folder").join("Peer.md");
+    let planned = store
+        .plan_rename(&expected, Path::new("Old.md"), &to)
+        .unwrap();
+    store
+        .vault()
+        .apply_rename_with_edits(Path::new("Old.md"), &to, &expected, &planned.pages)
+        .unwrap();
+    let task = Page::parse(
+        "Rows/Task.md",
+        &store.vault().read_source("Rows/Task.md").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        task.frontmatter["project"],
+        serde_yaml::Value::Sequence(vec!["../Peer".into(), "Folder/Peer".into()])
+    );
+}
+
+#[test]
+fn rename_respects_tag_membership_and_refuses_conflicting_field_types() {
+    let root = scratch();
+    write(&root, "Old.md", "old");
+    write(
+        &root,
+        "Tagged.md",
+        "---\ntags: [db]\nproject: '[[Old]]'\n---\nbody",
+    );
+    write(&root, "Untyped.md", "---\nproject: Old\n---\nbody");
+    let store = DatabaseStore::open(&root).unwrap();
+    store
+        .save_schema(
+            &relation_schema(DatabaseSource::Tag { tag: "db".into() }),
+            None,
+        )
+        .unwrap();
+    let expected = vault_pages(&store);
+    let planned = store
+        .plan_rename(&expected, Path::new("Old.md"), Path::new("New.md"))
+        .unwrap();
+    assert!(
+        !planned
+            .pages
+            .iter()
+            .any(|page| page.path == Path::new("Untyped.md"))
+    );
+    assert_eq!(
+        planned
+            .pages
+            .iter()
+            .find(|page| page.path == Path::new("Tagged.md"))
+            .unwrap()
+            .frontmatter["project"]
+            .as_str(),
+        Some("[[./New]]")
+    );
+    let text = DatabaseSchema {
+        id: "text".into(),
+        name: "Text interpretation".into(),
+        source: DatabaseSource::Folder {
+            path: String::new(),
+        },
+        fields: vec![field("project", PropertyType::Text)],
+    };
+    store.save_schema(&text, None).unwrap();
+    assert!(
+        store
+            .plan_rename(&expected, Path::new("Old.md"), Path::new("New.md"))
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting relation/text schemas")
+    );
+    for page in expected {
+        assert_eq!(store.vault().read_source(&page.path).unwrap(), page.source);
+    }
+}
+
 #[test]
 fn all_property_types_round_trip_through_plain_yaml() {
     let root = scratch();
@@ -154,7 +382,7 @@ fn malformed_typed_source_is_reported_without_modifying_it() {
         ("contexts", "[home, alien]"),
         ("contexts", "[home, home]"),
         ("done", "'false'"),
-        ("project", "['[[../escape]]']"),
+        ("project", "['[[../../escape]]']"),
         ("link", "javascript:alert(1)"),
         ("attachment", "../secret.txt"),
     ];

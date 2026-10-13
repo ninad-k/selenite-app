@@ -334,6 +334,7 @@ fn interrupt_after_archival(vault: &Vault) -> Journal {
         Path::new("Old.md"),
         Path::new("New.md"),
         &pages(vault),
+        &[],
     )
     .unwrap();
     let source = vault.resolve_existing(Path::new("Old.md")).unwrap();
@@ -389,6 +390,102 @@ fn recovery_refuses_external_edits_and_retains_all_snapshots() {
             edit.after
         );
     }
+}
+
+fn overlay_fixture() -> (Vault, Vec<Page>, Page) {
+    let vault = Vault::open(scratch()).unwrap();
+    vault.create_page("Old.md", "original target\r\n").unwrap();
+    vault
+        .create_page("Reader.md", "---\nrelation: Old\n---\n[[Old]]\r\n")
+        .unwrap();
+    let expected = pages(&vault);
+    let plan = plan_rename(&expected, Path::new("Old.md"), Path::new("New.md")).unwrap();
+    let reader = plan
+        .pages
+        .iter()
+        .find(|page| page.path == Path::new("Reader.md"))
+        .unwrap();
+    let overlay = Page::parse(
+        "Reader.md",
+        &format!("---\nrelation: New\n---\n{}", reader.body),
+    )
+    .unwrap();
+    (vault, expected, overlay)
+}
+
+#[test]
+fn frontmatter_overlay_commits_with_body_links_in_one_rename() {
+    let (vault, expected, overlay) = overlay_fixture();
+    let report = vault
+        .apply_rename_with_edits(
+            Path::new("Old.md"),
+            Path::new("New.md"),
+            &expected,
+            std::slice::from_ref(&overlay),
+        )
+        .unwrap();
+    assert_eq!(vault.read_source("Reader.md").unwrap(), overlay.source);
+    assert_eq!(vault.read_source("New.md").unwrap(), "original target\r\n");
+    assert_eq!(report.updated.len(), 2);
+    assert!(
+        vault
+            .root()
+            .join(report.journal)
+            .join("committed")
+            .is_file()
+    );
+}
+
+#[test]
+fn rename_overlays_reject_body_changes_duplicates_and_nonexistent_paths() {
+    let (vault, expected, overlay) = overlay_fixture();
+    for overlays in [
+        vec![Page::parse("Reader.md", "changed body").unwrap()],
+        vec![overlay.clone(), overlay.clone()],
+        vec![Page::parse("Old.md", "original target\r\n").unwrap()],
+        vec![Page::parse("Added.md", "not an existing page").unwrap()],
+    ] {
+        assert!(
+            vault
+                .apply_rename_with_edits(
+                    Path::new("Old.md"),
+                    Path::new("New.md"),
+                    &expected,
+                    &overlays
+                )
+                .is_err()
+        );
+        for page in &expected {
+            assert_eq!(vault.read_source(&page.path).unwrap(), page.source);
+        }
+        assert!(!vault.root().join("New.md").exists());
+    }
+}
+
+#[test]
+fn interrupted_rename_recovers_frontmatter_overlay_and_markdown_together() {
+    let (vault, expected, overlay) = overlay_fixture();
+    let journal = {
+        let _guard = exclusive(&vault).unwrap();
+        let journal = prepare_rename(
+            &vault,
+            Path::new("Old.md"),
+            Path::new("New.md"),
+            &expected,
+            std::slice::from_ref(&overlay),
+        )
+        .unwrap();
+        let source = vault.resolve_existing(Path::new("Old.md")).unwrap();
+        let archived = journal.directory.join("source-archive.md");
+        assert!(source.starts_with(vault.root()) && archived.starts_with(vault.root()));
+        fs::rename(source, archived).unwrap();
+        journal
+    };
+    let recovered = vault.recover_pending_renames().unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(vault.read_source("Reader.md").unwrap(), overlay.source);
+    assert_eq!(vault.read_source("New.md").unwrap(), "original target\r\n");
+    assert!(journal.directory.join("source-archive.md").is_file());
 }
 
 #[cfg(unix)]

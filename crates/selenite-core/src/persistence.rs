@@ -190,11 +190,24 @@ impl Vault {
         to: &Path,
         expected_pages: &[Page],
     ) -> io::Result<RenameReport> {
+        self.apply_rename_with_edits(from, to, expected_pages, &[])
+    }
+
+    /// Apply additional frontmatter edits in the same rename journal. Overlays
+    /// must name unique existing post-rename pages and preserve every body byte
+    /// produced by the core link planner. Domain schemas remain outside core.
+    pub fn apply_rename_with_edits(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected_pages: &[Page],
+        final_additional_pages: &[Page],
+    ) -> io::Result<RenameReport> {
         if from == to {
             return Err(invalid("rename source and destination are identical"));
         }
         let _guard = exclusive(self)?;
-        let journal = prepare_rename(self, from, to, expected_pages)?;
+        let journal = prepare_rename(self, from, to, expected_pages, final_additional_pages)?;
         complete_rename(self, &journal).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -277,7 +290,13 @@ struct Journal {
     unchanged: BTreeMap<PathBuf, String>,
 }
 
-fn prepare_rename(vault: &Vault, from: &Path, to: &Path, expected: &[Page]) -> io::Result<Journal> {
+fn prepare_rename(
+    vault: &Vault,
+    from: &Path,
+    to: &Path,
+    expected: &[Page],
+    additional: &[Page],
+) -> io::Result<Journal> {
     let mut sources = BTreeMap::new();
     let mut parsed = Vec::new();
     for page in expected {
@@ -297,13 +316,45 @@ fn prepare_rename(vault: &Vault, from: &Path, to: &Path, expected: &[Page]) -> i
         )?;
     }
     let plan = plan_rename(&parsed, from, to).map_err(invalid)?;
+    let mut final_pages: BTreeMap<_, _> = plan
+        .pages
+        .into_iter()
+        .map(|page| (page.path.clone(), page))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for overlay in additional {
+        let overlay = Page::parse(&overlay.path, &overlay.source).map_err(invalid)?;
+        if !seen.insert(overlay.path.clone()) {
+            return Err(invalid("duplicate rename overlay path"));
+        }
+        let base = final_pages
+            .get(&overlay.path)
+            .or_else(|| {
+                parsed
+                    .iter()
+                    .find(|page| page.path != from && page.path == overlay.path)
+            })
+            .ok_or_else(|| invalid("rename overlay does not name an existing post-rename page"))?;
+        if overlay.body != base.body {
+            return Err(invalid(
+                "rename overlay changes core-planned Markdown body bytes",
+            ));
+        }
+        final_pages.insert(overlay.path.clone(), overlay);
+    }
+    final_pages.retain(|path, page| {
+        path == to
+            || sources
+                .get(path)
+                .is_none_or(|source| *source != &page.source)
+    });
     // Resolve all parent paths and verify destinations before source mutations.
-    for page in &plan.pages {
+    for page in final_pages.values() {
         destination(vault.root(), &page.path, true)?;
     }
     let (_, directory) = revision_directory(vault, "transactions")?;
     let mut edits = Vec::new();
-    for (number, page) in plan.pages.into_iter().enumerate() {
+    for (number, page) in final_pages.into_values().enumerate() {
         let source = if page.path == to {
             from.to_owned()
         } else {
