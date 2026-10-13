@@ -1,0 +1,1 @@
+//! Selenite plugin-host foundation.

@@ -1,0 +1,1 @@
+//! Selenite core foundation.

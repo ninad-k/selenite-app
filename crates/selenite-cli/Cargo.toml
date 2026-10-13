@@ -1,0 +1,17 @@
+[package]
+name = "selenite-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "selenite"
+path = "src/main.rs"
+
+[dependencies]
+selenite-index.workspace = true
+selenite-db.workspace = true
+

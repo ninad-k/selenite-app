@@ -1,0 +1,12 @@
+[package]
+name = "selenite-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selenite-index.workspace = true
+selenite-db.workspace = true

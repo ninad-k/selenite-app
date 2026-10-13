@@ -1,0 +1,1 @@
+//! Selenite index foundation.

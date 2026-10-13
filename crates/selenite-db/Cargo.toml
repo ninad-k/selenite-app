@@ -1,0 +1,12 @@
+[package]
+name = "selenite-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+selenite-core.workspace = true
+

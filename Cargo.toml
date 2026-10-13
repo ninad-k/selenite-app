@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[workspace.dependencies]
+selenite-core = { path = "crates/selenite-core" }
+selenite-index = { path = "crates/selenite-index" }
+selenite-db = { path = "crates/selenite-db" }

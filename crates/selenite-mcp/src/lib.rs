@@ -1,0 +1,1 @@
+//! Selenite mcp foundation.
