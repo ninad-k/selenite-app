@@ -1,0 +1,7 @@
+{
+  "id": "echo",
+  "name": "JSON echo",
+  "version": "1.0.0",
+  "abi_version": 1,
+  "capabilities": []
+}

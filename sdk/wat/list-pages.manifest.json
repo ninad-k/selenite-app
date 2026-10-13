@@ -1,0 +1,7 @@
+{
+  "id": "list-pages",
+  "name": "List vault pages",
+  "version": "1.0.0",
+  "abi_version": 1,
+  "capabilities": ["vault_list"]
+}
