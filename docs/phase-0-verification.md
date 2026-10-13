@@ -14,7 +14,7 @@ Recorded on 2026-10-13 on Windows, using Rust 1.95.0 and Node.js 24.21.0. These 
 | Native desktop ready below 1 s | Five actual Tauri launches with a preselected vault completed in **906.210, 646.569, 646.006, 638.524 and 717.086 ms** from process spawn to readiness report. |
 | Existing Obsidian opens the vault unchanged | Not performed. Plain Markdown/YAML and byte-preservation checks passed; actual editor interoperability remains a manual acceptance check. |
 
-The functional implementation is complete, but Phase 0 is not fully signed off: literal deletion followed by rebuild and actual Obsidian opening remain unverified. The user deferred the Obsidian check and cannot perform it now. The search threshold also needs its stated API scope kept distinct from CLI latency. No Phase 1 implementation is included.
+This records the original Phase 0 implementation before the later parallel tracks. Phase 0 was not fully signed off: literal deletion followed by rebuild and actual Obsidian opening remained unverified. The user deferred the Obsidian check and cannot perform it now. The search threshold also needs its stated API scope kept distinct from CLI latency. Later work is tracked in [the implementation plan](implementation-plan.md) and its verification report.
 
 ## Index and search measurements
 

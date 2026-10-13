@@ -15,12 +15,16 @@ the source of truth. A page is one `.md` file; its filename supplies its title.
 Properties live in YAML frontmatter, blocks may carry `^block-id`, and links use
 `[[page]]`, `![[page]]`, or `[[page#^block]]`.
 
-Phase 0 implements parsing, backlink resolution, source-preserving rename plans,
-rebuildable SQLite/Tantivy indexes, debounced file watching, three CLI commands,
-and a Tauri 2 + Svelte vault browser with a read-only daily-note preview.
-The table above describes the product direction: database schemas/views, graph
-UI, CodeMirror editing, sync, plugins, AI, and MCP are future work. Provider traits
-and placeholder crates establish boundaries without implementing those features.
+The local implementation includes CodeMirror editing, conflict-aware saves,
+reviewed renames, wikilinks and note/block previews, backlinks, a graph, typed
+databases and all four view layouts. Reusable templates provide diary and GTD
+behavior. SQLite/Tantivy indexes and AI vectors are rebuildable caches.
+
+Optional integrations include Google Drive/OneDrive version archives, cited
+hybrid AI retrieval with BYO models, MCP stdio tools, a Wasmtime plugin sandbox,
+signed plugin catalogs and configurable signed entitlements. Services are
+disabled until configured and explicitly invoked. No hosted marketplace,
+billing service, model service or cloud account is deployed by this repository.
 
 ## Architecture
 
@@ -28,27 +32,31 @@ and placeholder crates establish boundaries without implementing those features.
 crates/
   selenite-core/         Markdown pages, blocks, properties, links, vault access
   selenite-index/        SQLite, Tantivy, rebuild, incremental file watcher
-  selenite-db/           Schema/view/query placeholder
-  selenite-sync/         SyncProvider trait stub
-  selenite-plugin-host/  Placeholder
-  selenite-ai/           LlmProvider trait stub
-  selenite-mcp/          Placeholder
+  selenite-db/           Typed schemas, saved views, filters and property writes
+  selenite-sync/         SyncProvider adapters, reviewed plans, conflict recovery
+  selenite-plugin-host/  Wasmtime sandbox, signed catalogs and entitlements
+  selenite-ai/           BYO providers, hybrid retrieval and source citations
+  selenite-mcp/          Bounded read-only/opt-in-write stdio vault tools
   selenite-cli/          Headless vault commands
 apps/desktop/           Tauri 2 + Svelte shell
-sdk/                    Reserved SDK directory
+sdk/                    Original plugin ABI examples and authoring guide
 docs/adr/               Architecture decisions
 templates/              Plain Markdown templates
 .github/workflows/      Windows, Linux, macOS checks
 ```
 
-Apps and CLI depend on index/db/core; index and db depend on core. Core has no
+Apps and CLI compose the index, database and optional service crates; index and db depend on core. Core has no
 dependency on another workspace crate, no UI, and no network access. Daily-note
 calendar behavior belongs to the desktop shell.
 
 See [ADR-001](docs/adr/ADR-001-files-are-source-of-truth.md) for persistence and
 recovery rules, [dependency choices](docs/dependencies.md) for versions and
 licenses, and [Phase 0 verification](docs/phase-0-verification.md) for measured
-results and remaining acceptance checks.
+results and remaining acceptance checks. The [parallel implementation plan](docs/implementation-plan.md)
+records the authorized later scope; [expanded verification](docs/all-phases-verification.md)
+records its checks and remaining live acceptance work. Guides cover [databases](docs/databases.md),
+[sync](docs/sync.md), [AI](docs/ai.md), [MCP](docs/mcp.md), [plugins](docs/plugins.md),
+and [optional entitlements](docs/pro.md).
 
 ## Build and run
 
@@ -68,6 +76,7 @@ $env:npm_config_userconfig = Join-Path $PWD '.local/npmrc'
 New-Item -ItemType Directory -Force $env:CARGO_HOME, $env:TEMP, $env:npm_config_cache | Out-Null
 
 npm --prefix apps/desktop ci
+npm --prefix apps/desktop test
 npm --prefix apps/desktop run build
 cargo build --workspace --locked
 cargo fmt --all --check
@@ -85,6 +94,8 @@ full workspace on all three operating systems.
 cargo run -p selenite-cli --bin selenite -- rebuild "path-to-vault"
 cargo run -p selenite-cli --bin selenite -- search "path-to-vault" "ownership"
 cargo run -p selenite-cli --bin selenite -- backlinks "path-to-vault" "Projects/Rust.md"
+cargo run -p selenite-cli --bin selenite -- init-gtd "path-to-vault"
+cargo run -p selenite-cli --bin selenite -- views "path-to-vault"
 
 # With no argument, choose Open a vault on the welcome screen.
 cargo run -p selenite-desktop --release -- "path-to-vault"
@@ -95,7 +106,12 @@ The desktop also accepts `SELENITE_VAULT`. It opens the local calendar day's
 `<vault>/.selenite/templates/daily.md`; `{{date}}` and `{{title}}` are substituted.
 Otherwise it uses [the bundled template](templates/daily.md). Existing notes are
 never overwritten. The folder chooser can switch vaults; the file tree opens
-other notes. Raw HTML is escaped and embedded images are omitted in this preview.
+other notes. Choose Edit for CodeMirror; Ctrl+S saves. Unsaved edits are protected
+during navigation and window closing. Raw HTML is escaped and Markdown images
+remain omitted; wikilinks navigate locally and standalone note/block embeds show
+bounded previews without recursive expansion.
+The Resource panel can display an explicitly reviewed HTTPS embed beside the
+note. External sites may disallow framing; no resource loads automatically.
 
 For frontend development, run `npm --prefix apps/desktop run dev` in one terminal
 and `cargo run -p selenite-desktop --no-default-features` in another. Apply the
@@ -118,17 +134,27 @@ query API; process startup and a full CLI reconciliation are separate costs.
 SQLite and Tantivy files live under `<vault>/.selenite/cache`. `selenite rebuild`
 derives both from Markdown, including recovery from incompatible/corrupt caches.
 Such caches are retained in a sibling `cache-retired-*` directory for inspection.
-Preserve `.selenite/templates` and future schema/view definitions when managing
+Preserve `.selenite/templates`, schema/view definitions and service settings when managing
 caches. A malformed note reports an error; it is never silently rewritten or
 dropped. Symlinked pages and directories are excluded, and path traversal is
 rejected.
 
-Rename planning currently returns reviewed source edits in memory; applying a
-multi-file rename is future work. New-note creation uses exclusive creation and
-never replaces an existing file; an I/O failure during the initial write may
-leave a partial newly created note for inspection. External edits appear when
-the desktop reopens a page or refreshes today's view; automatic preview refresh
-is not part of this foundation.
+Renames show a review before applying source-preserving link updates. Saves use
+exact-source checks, synced staging and atomic per-file publication. Previous
+sources and multi-file rename journals are retained under `.selenite`; an
+interrupted rename can be explicitly resumed with `selenite recover-renames`.
+Atomic creation requires local storage supporting hard links. Locks coordinate
+Selenite processes, while unrelated editors can still race; changed source bytes
+cause a conflict instead of a silent overwrite. Use Refresh from disk to pick up
+external changes; unsaved drafts remain protected.
+
+Run `selenite --help` for database, AI, sync, plugin and MCP commands. Service
+settings are vault-local TOML with environment-variable names for secrets. Sync
+uses immutable remote JSON version archives, not an editable folder mirror.
+Signed plugin catalogs and paid capability names are deployment configuration;
+all community note, database and search functions remain available without an
+entitlement. Real cloud accounts, model providers and hosted commerce still need
+operator configuration and live acceptance tests.
 
 No account or hosted service is required. See the existing repository
 [LICENSE](LICENSE).

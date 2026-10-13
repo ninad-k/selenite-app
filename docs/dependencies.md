@@ -1,4 +1,4 @@
-# Phase 0 dependencies
+# Dependency inventory
 
 This inventory records the resolved direct dependencies in [Cargo.lock](../Cargo.lock) and the desktop [package-lock.json](../apps/desktop/package-lock.json) on 2026-10-13. Cargo license values were checked against the downloaded package manifests; npm license values come from the lockfile. First-party workspace crates are omitted from the external dependency tables.
 
@@ -20,8 +20,16 @@ Each direct dependency below has a permissive license. `OR` denotes the alternat
 | `tauri` | `2.12.3` | Apache-2.0 OR MIT | Host the native window and webview and expose Rust-owned vault commands. |
 | `tauri-build` | `2.7.2` | Apache-2.0 OR MIT | Generate native build resources and validate Tauri configuration and capabilities. |
 | `tauri-plugin-dialog` | `2.8.2` | Apache-2.0 OR MIT | Provide the native vault-folder picker through the Rust command boundary. |
+| `toml` | `1.1.8+spec-1.1.0` | MIT OR Apache-2.0 | Parse and serialize authoritative database schemas, saved views and optional service settings. |
+| `url` | `2.5.8` | MIT OR Apache-2.0 | Validate property URLs and configured network endpoints without hand-written URL parsing. |
+| `reqwest` | `0.13.5` | MIT OR Apache-2.0 | Provide bounded HTTP requests with Rustls for explicitly enabled model, sync and catalog adapters. |
+| `sha2` | `0.10.9` | MIT OR Apache-2.0 | Identify source revisions, disposable embeddings and immutable plugin packages by SHA-256. |
+| `base64` | `0.22.1` | MIT OR Apache-2.0 | Decode public keys/signatures and encode retained WASM packages. |
+| `ed25519-dalek` | `2.2.0` | BSD-3-Clause | Verify signed catalogs and configurable entitlements using established Ed25519 implementations. |
+| `wasmtime` | `36.0.17` | Apache-2.0 WITH LLVM-exception | Execute capability-limited WASM with fuel and memory bounds and no WASI imports. |
+| `wat` (development) | `1.236.1` | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Compile original readable WASM fixtures and SDK examples for executable ABI tests. |
 
-`serde_yaml` is deprecated and its upstream README states that it is no longer maintained. It is retained in Phase 0 because the agreed parser stack explicitly requested it. Its use is limited to frontmatter parsing and cache serialization; any future replacement must preserve vault YAML compatibility. No replacement dependency is introduced here.
+`serde_yaml` is deprecated and its upstream README states that it is no longer maintained. It is retained because the agreed parser stack explicitly requested it. It handles frontmatter parsing, typed property edits and cache serialization; any future replacement must preserve vault YAML compatibility. No replacement dependency is introduced here. Wasmtime is pinned to the 36.0.17 LTS patch to keep the workspace Rust 1.90 minimum; its optional WASI support is disabled.
 
 ## Desktop JavaScript
 
@@ -32,8 +40,14 @@ Each direct dependency below has a permissive license. `OR` denotes the alternat
 | `vite` | `7.3.7` | MIT | Run the development server and build the local frontend assets. |
 | `@sveltejs/vite-plugin-svelte` | `6.2.4` | MIT | Compile Svelte components during Vite development and builds. |
 | `@tauri-apps/cli` | `2.12.2` | Apache-2.0 OR MIT | Run the native desktop development and build commands. |
+| `@codemirror/state` | `6.7.6` | MIT | Manage editor documents and transactions. |
+| `@codemirror/view` | `6.43.14` | MIT | Render the lazily loaded Markdown editor. |
+| `@codemirror/commands` | `6.11.1` | MIT | Provide editing commands, keymaps and undo history. |
+| `@codemirror/language` | `6.13.1` | MIT | Provide syntax highlighting and language support. |
+| `@codemirror/lang-markdown` | `6.5.2` | MIT | Parse Markdown for editor syntax support. |
+| `@codemirror/search` | `6.7.2` | MIT | Provide find and replace within the editor. |
 
-The frontend uses system fonts and original inline SVGs, with no remote assets or additional UI dependency. Node.js 24 is the configured CI runtime.
+The frontend uses system fonts and original inline SVGs. An optional HTTPS resource frame loads only after explicit URL/origin review. Node.js 24 is the configured CI runtime. Existing `serde`, `serde_json`, `chrono` and `anyhow` dependencies also support the new serialization, date validation and service boundaries.
 
 ## Approved transitive license exceptions
 

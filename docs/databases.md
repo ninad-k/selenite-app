@@ -56,3 +56,10 @@ not special logic in the query engine.
 Property edits preserve Markdown body bytes and unknown YAML values, but YAML
 comments, key ordering and scalar formatting may change during serialization.
 Use the Markdown editor when exact frontmatter formatting matters.
+
+Reviewed page renames also update schema-typed relation values. Scalar and list
+relations preserve the identity of unambiguous targets, including relative
+references from moved rows and basename collisions introduced by a rename.
+Untyped text, unknown properties and unresolved/ambiguous relations are left
+unchanged. The final YAML and Markdown edits share one core recovery journal;
+the desktop rejects a changed preview before publishing the rename.
