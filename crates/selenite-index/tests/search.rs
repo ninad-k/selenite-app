@@ -104,3 +104,62 @@ fn rebuild_replaces_changed_body_and_omits_retained_non_markdown_backup() {
     assert_eq!(updated[0].path, Path::new("Changed.md"));
     assert_eq!(fs::read_to_string(retained).unwrap(), "oldphrase");
 }
+
+#[test]
+fn missing_required_search_segment_recovers_and_retains_damaged_cache() {
+    for extension in ["term", "store", "idx"] {
+        let root = common::scratch(&format!("search-missing-{extension}"));
+        common::write(&root, "One.md", "recoverableword first note");
+        common::write(&root, "Two.md", "recoverableword second note");
+        let mut index = Index::open(&root).unwrap();
+        index.rebuild().unwrap();
+        let before = index.search("recoverableword", 10).unwrap();
+        let cache = index.cache_dir().to_owned();
+        drop(index);
+
+        let segment = fs::read_dir(cache.join("search"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|value| value == extension))
+            .expect("a built index must have the required segment component");
+        let retained = segment.with_extension(format!("{extension}.bak"));
+        assert!(segment.canonicalize().unwrap().starts_with(&root));
+        assert!(
+            retained
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .starts_with(&root)
+        );
+        assert!(!retained.exists());
+        let bytes = fs::read(&segment).unwrap();
+        fs::rename(segment, &retained).unwrap();
+        assert!(Index::open(&root).is_err());
+
+        let (rebuilt, stats) = Index::rebuild_from_disk(&root).unwrap();
+        assert_eq!(stats.pages, 2);
+        assert!(rebuilt.is_ready().unwrap());
+        assert_eq!(rebuilt.search("recoverableword", 10).unwrap(), before);
+        let archive = fs::read_dir(root.join(".selenite"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("cache-retired-")
+            })
+            .expect("the damaged cache must be retained");
+        let backup = archive.join("search").join(retained.file_name().unwrap());
+        assert_eq!(fs::read(backup).unwrap(), bytes);
+        assert_eq!(
+            fs::read_to_string(root.join("One.md")).unwrap(),
+            "recoverableword first note"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Two.md")).unwrap(),
+            "recoverableword second note"
+        );
+    }
+}

@@ -8,6 +8,7 @@ use selenite_core::Page;
 use tantivy::{
     Index, IndexReader, ReloadPolicy, TantivyDocument, TantivyError, Term,
     collector::TopDocs,
+    directory::error::OpenReadError,
     query::QueryParser,
     schema::{Field, STORED, STRING, Schema, TEXT, Value},
 };
@@ -162,6 +163,7 @@ fn classify_error(error: TantivyError) -> anyhow::Error {
         TantivyError::DataCorruption(_)
             | TantivyError::SchemaError(_)
             | TantivyError::IncompatibleIndex(_)
+            | TantivyError::OpenReadError(OpenReadError::FileDoesNotExist(_))
     ) {
         anyhow::Error::new(error).context(IncompatibleCache)
     } else {
