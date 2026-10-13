@@ -11,7 +11,7 @@ mod signed;
 
 pub use catalog::{
     CATALOG_SIGNING_DOMAIN, Catalog, CatalogClient, CatalogEntry, InstalledPlugin, VerifiedCatalog,
-    list_installed, load_installed, run_installed, verify_catalog,
+    list_installed, load_installed, run_installed, run_installed_reviewed, verify_catalog,
 };
 pub use config::{Capability, PluginConfig, PluginManifest, SandboxLimits};
 pub use runtime::{PluginHost, PluginRun};

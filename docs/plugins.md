@@ -76,6 +76,7 @@ Every installed run checks record/package consistency, content hashes and the or
 - `PluginConfig::validate`, `PluginHost::new`, and `PluginHost::run` configure and execute explicitly supplied modules.
 - `CatalogClient::fetch_catalog`, `verify_catalog`, `CatalogClient::install`, and `install_from_bytes` verify and install configured or deliberately selected packages.
 - `list_installed`, `load_installed`, and `run_installed` inspect stored packages and execute them under current settings. `load_installed` checks stored integrity; `run_installed` additionally verifies publisher trust and applies grants.
+- `run_installed_reviewed` compares the complete reviewed installed record, then validates and executes the same captured module bytes. The desktop also compares the exact reviewed configuration, rejecting a changed package or permission grant before execution.
 
 Tests run original Wasm modules and cover fuel exhaustion, memory growth, denied imports, invalid pointers, denied capabilities, bounded reads/call counts, compare-and-swap conflicts, a local HTTP catalog/package round trip, tampered signatures/packages, retained versions and revoked keys. Original WAT and Rust examples are in [the SDK](../sdk/README.md).
 

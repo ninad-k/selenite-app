@@ -16,7 +16,7 @@ use selenite_plugin_host::{
     CATALOG_SIGNING_DOMAIN, Capability, Catalog, CatalogClient, CatalogEntry, PluginConfig,
     PluginHost, PluginManifest, SignedDocument, list_installed, load_installed,
     pro::{ENTITLEMENT_SIGNING_DOMAIN, Entitlement, ProConfig, verify_entitlement},
-    run_installed, verify_catalog,
+    run_installed, run_installed_reviewed, verify_catalog,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -431,6 +431,78 @@ fn signed_catalog_rejects_tampering_and_installs_without_granting_capabilities()
     let mut revoked = config.clone();
     revoked.trusted_catalog_keys.clear();
     assert!(run_installed(&vault, &revoked, "test-plugin", json!(null)).is_err());
+}
+
+#[test]
+fn reviewed_run_rejects_changed_version_or_writer_before_any_host_effect() {
+    let key = SigningKey::from_bytes(&[9; 32]);
+    let mut config = catalog_config(&key);
+    config.grants.insert(
+        "test-plugin".into(),
+        BTreeSet::from([Capability::VaultWrite]),
+    );
+    let vault = Vault::open(scratch()).unwrap();
+    let client = CatalogClient::new(&config).unwrap();
+    let wasm = echo();
+    let install = |document: &SignedDocument, bytes: &[u8]| {
+        client
+            .install_from_bytes(
+                &vault,
+                &verify_catalog(&config, document, now()).unwrap(),
+                "test-plugin",
+                bytes,
+            )
+            .unwrap()
+    };
+    let first = install(
+        &catalog_document(&wasm, &key, "https://example.com/plugin.wasm", "1.0.0"),
+        &wasm,
+    );
+    assert_eq!(
+        run_installed_reviewed(&vault, &config, &first, json!("reviewed"))
+            .unwrap()
+            .output,
+        json!("reviewed")
+    );
+    let second = install(
+        &catalog_document(&wasm, &key, "https://example.com/plugin.wasm", "2.0.0"),
+        &wasm,
+    );
+    assert!(
+        run_installed_reviewed(&vault, &config, &first, json!(null))
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    let writer = call_module(
+        json!({"op":"write","path":"Created.md","expected_source":null,"source":"# Written after review"}),
+        1,
+    );
+    let document = catalog_document(&writer, &key, "https://example.com/plugin.wasm", "2.0.0");
+    let mut catalog: Catalog = serde_json::from_str(&document.payload).unwrap();
+    catalog.entries[0]
+        .manifest
+        .capabilities
+        .insert(Capability::VaultWrite);
+    let document = signed(
+        serde_json::to_string(&catalog).unwrap(),
+        CATALOG_SIGNING_DOMAIN,
+        &key,
+    );
+    let third = install(&document, &writer);
+    assert!(
+        run_installed_reviewed(&vault, &config, &second, json!(null))
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    assert!(vault.read_source("Created.md").is_err());
+    let result = run_installed_reviewed(&vault, &config, &third, json!(null)).unwrap();
+    assert_eq!(result.output["ok"], true);
+    assert_eq!(
+        vault.read_source("Created.md").unwrap(),
+        "# Written after review"
+    );
 }
 
 #[test]

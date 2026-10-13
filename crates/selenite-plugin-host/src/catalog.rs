@@ -342,9 +342,35 @@ pub fn run_installed(
     id: &str,
     input: Value,
 ) -> Result<PluginRun> {
+    run_selected(vault, config, id, None, input)
+}
+
+/// Execute the same installed manifest and module that the caller reviewed.
+/// Validation and execution share the loaded bytes, so a concurrent install
+/// cannot substitute a newer module after the review comparison succeeds.
+pub fn run_installed_reviewed(
+    vault: &Vault,
+    config: &PluginConfig,
+    expected: &InstalledPlugin,
+    input: Value,
+) -> Result<PluginRun> {
+    run_selected(vault, config, &expected.id, Some(expected), input)
+}
+
+fn run_selected(
+    vault: &Vault,
+    config: &PluginConfig,
+    id: &str,
+    expected: Option<&InstalledPlugin>,
+    input: Value,
+) -> Result<PluginRun> {
     config.validate()?;
     ensure!(config.enabled, "plugins are disabled");
-    let (_, package, wasm) = load_package(vault, id, &config.limits)?;
+    let (installed, package, wasm) = load_package(vault, id, &config.limits)?;
+    ensure!(
+        expected.is_none_or(|expected| expected == &installed),
+        "installed plugin changed; review its version and capabilities again"
+    );
     // An installed plugin outlives its catalog's download window, but its
     // original signature must still verify under currently trusted keys.
     signed::verify(
