@@ -14,4 +14,3 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde_yaml = "0.9"
 tantivy = { version = "0.26", default-features = false, features = ["mmap", "lz4-compression"] }
 notify = "8.2"
-

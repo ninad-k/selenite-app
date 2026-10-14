@@ -21,4 +21,3 @@ wasmtime = { version = "=36.0.17", default-features = false, features = ["cranel
 
 [dev-dependencies]
 wat = "=1.236.1"
-

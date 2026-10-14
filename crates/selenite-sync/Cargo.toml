@@ -16,4 +16,3 @@ sha2 = "0.10"
 toml = "1.1"
 url = "2"
 selenite-core.workspace = true
-

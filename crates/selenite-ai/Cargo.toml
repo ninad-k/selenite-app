@@ -17,4 +17,3 @@ toml = "1.1"
 url = "2"
 selenite-core.workspace = true
 selenite-index.workspace = true
-
